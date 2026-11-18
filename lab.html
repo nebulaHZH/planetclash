@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Asset Lab · KayKit + Kenney</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #221634; }
+      canvas { display: block; }
+      #info {
+        position: fixed; left: 16px; top: 16px; z-index: 2; color: #fffdf8;
+        font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: rgba(34, 22, 52, .72); padding: 10px 12px; border-radius: 10px;
+        white-space: pre; pointer-events: none;
+      }
+      #bar { position: fixed; left: 16px; bottom: 16px; display: flex; gap: 6px; z-index: 2; }
+      #bar button {
+        font: 12px/1 ui-monospace, monospace; padding: 8px 10px; border-radius: 8px; border: 0;
+        background: #ff7fa8; color: #2b1b2f; cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="info">loading…</div>
+    <div id="bar"></div>
+    <script type="module" src="/src/lab.ts"></script>
+  </body>
+</html>
