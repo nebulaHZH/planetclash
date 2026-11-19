@@ -10,6 +10,12 @@ export type WeaponHooks = {
   onEmpty: () => void
   onReload: () => void
   onSwap: () => void
+  /** Knife swing: `Game` does the short-range hit test. */
+  onMelee: (weapon: WeaponConfig) => void
+  /** Shovel bite at whatever the crosshair is pointing at. */
+  onDig: (weapon: WeaponConfig) => void
+  /** Drop a ladder on the ground ahead. */
+  onPlace: (weapon: WeaponConfig) => void
 }
 
 type Model = {
@@ -23,6 +29,16 @@ type Model = {
   grip: readonly [number, number, number]
   mats: THREE.Material[]
   geos: THREE.BufferGeometry[]
+}
+
+/** Rest pose for each tool kind: tools are held, not aimed. */
+const TOOL_POSE: Record<string, { rx: number; ry: number; dx: number; dy: number; dz: number }> = {
+  // Blade angled up off the fist, tip past the crosshair line.
+  melee: { rx: -0.12, ry: 0.02, dx: 0.0, dy: 0.03, dz: 0.02 },
+  // Blade low and forward, handle rising back toward the shoulder.
+  shovel: { rx: 0.55, ry: 0.18, dx: 0.0, dy: 0.06, dz: -0.02 },
+  // Rungs stand up in front of the body.
+  ladder: { rx: -0.85, ry: 0.12, dx: 0.02, dy: 0.09, dz: -0.03 },
 }
 
 const HIP = new THREE.Vector3(0.152, -0.143, -0.485)
@@ -108,6 +124,8 @@ export class WeaponSystem {
   private swayX = 0
   private swayY = 0
   private aimLerp = 0
+  /** Seconds since the last tool swing; -1 when the hands are at rest. */
+  private swingT = -1
   private hooks: WeaponHooks
   private audio: GameAudio
 
@@ -275,7 +293,88 @@ export class WeaponSystem {
       )
     }
 
-    if (asset) {
+    if (weapon.kind !== 'gun') {
+      const wood = toon('#D9A273')
+      const woodDeep = toon('#B9814F')
+      const candy = toon(weapon.color)
+      const plum = toon('#43304F')
+      const steel = toon('#E8F6FF')
+      const gold = toon(COLORS.gold)
+      const mint = toon(COLORS.mint)
+      // Blade steel: mint would vanish against mint-green grass.
+      const blade = toon('#A8DCFF')
+      mats.push(wood, woodDeep, candy, plum, steel, gold, mint, blade)
+
+      if (weapon.kind === 'melee') {
+        addPart(new THREE.CylinderGeometry(0.021, 0.024, 0.15, 12), plum, new THREE.Vector3(0, 0, 0.02), _alongZ.clone())
+        addPart(new THREE.SphereGeometry(0.026, 12, 10), candy, new THREE.Vector3(0, 0, 0.1))
+        addPart(new THREE.BoxGeometry(0.074, 0.019, 0.022), gold, new THREE.Vector3(0, 0.004, -0.06))
+        addPart(new THREE.BoxGeometry(0.044, 0.015, 0.2), steel, new THREE.Vector3(0, 0.007, -0.17))
+        addPart(
+          new THREE.ConeGeometry(0.031, 0.085, 4),
+          steel,
+          new THREE.Vector3(0, 0.007, -0.31),
+          new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, Math.PI / 4)),
+          new THREE.Vector3(0.72, 1, 0.3),
+        )
+        addPart(new THREE.BoxGeometry(0.007, 0.018, 0.2), toon(COLORS.white), new THREE.Vector3(0, 0.014, -0.17))
+        mats.push(toon(COLORS.white))
+        muzzle.set(0, 0.007, -0.34)
+        addHand(
+          new THREE.Vector3(0.0, -0.062, 0.03),
+          false,
+          new THREE.Vector3(0.13, -0.175, 0.04),
+          new THREE.Vector3(0.2, -0.5, 0.26),
+        )
+      } else if (weapon.kind === 'shovel') {
+        // A garden trowel, not a full spade: short shaft keeps the mint blade
+        // right above the fist where it actually reads in first person.
+        addPart(new THREE.CylinderGeometry(0.015, 0.017, 0.24, 10), wood, new THREE.Vector3(0, 0, -0.03), _alongZ.clone())
+        addPart(new THREE.TorusGeometry(0.04, 0.012, 8, 18), woodDeep, new THREE.Vector3(0, 0, 0.1))
+        addPart(new THREE.BoxGeometry(0.155, 0.02, 0.18), blade, new THREE.Vector3(0, -0.006, -0.23))
+        addPart(
+          new THREE.SphereGeometry(0.066, 16, 10),
+          blade,
+          new THREE.Vector3(0, -0.006, -0.32),
+          undefined,
+          new THREE.Vector3(0.98, 0.26, 0.7),
+        )
+        addPart(new THREE.BoxGeometry(0.14, 0.026, 0.026), woodDeep, new THREE.Vector3(0, -0.006, -0.15))
+        muzzle.set(0, -0.006, -0.35)
+        addHand(
+          new THREE.Vector3(0.0, -0.062, 0.05),
+          false,
+          new THREE.Vector3(0.14, -0.17, 0.05),
+          new THREE.Vector3(0.22, -0.48, 0.3),
+        )
+        addHand(
+          new THREE.Vector3(0.012, -0.058, -0.09),
+          true,
+          new THREE.Vector3(-0.13, -0.17, -0.06),
+          new THREE.Vector3(-0.24, -0.46, 0.06),
+        )
+      } else {
+        for (const side of [-1, 1]) {
+          addPart(new THREE.BoxGeometry(0.022, 0.022, 0.4), wood, new THREE.Vector3(side * 0.06, 0, -0.16))
+        }
+        for (let i = 0; i < 4; i++) {
+          addPart(new THREE.BoxGeometry(0.12, 0.02, 0.026), woodDeep, new THREE.Vector3(0, 0, -0.02 - i * 0.095))
+        }
+        muzzle.set(0, 0, -0.36)
+        addHand(
+          new THREE.Vector3(0.0, -0.062, 0.04),
+          false,
+          new THREE.Vector3(0.13, -0.175, 0.05),
+          new THREE.Vector3(0.21, -0.5, 0.28),
+        )
+        addHand(
+          new THREE.Vector3(0.006, -0.058, -0.16),
+          true,
+          new THREE.Vector3(-0.12, -0.17, -0.12),
+          new THREE.Vector3(-0.24, -0.46, 0.0),
+        )
+      }
+    } else if (asset) {
       const gun = asset.scene.clone(true)
       gunObj = gun
       gun.traverse((obj) => {
@@ -460,6 +559,11 @@ export class WeaponSystem {
     this.swayX += (-lookX * 0.0009 - this.swayX) * Math.min(1, dt * 9)
     this.swayY += (-lookY * 0.0009 - this.swayY) * Math.min(1, dt * 9)
 
+    if (this.swingT >= 0) {
+      this.swingT += dt
+      if (this.swingT > 0.62) this.swingT = -1
+    }
+
     if (this.reloading) {
       this.reloadT += dt
       if (this.reloadT >= weapon.reload) {
@@ -487,7 +591,7 @@ export class WeaponSystem {
     const air = player.grounded ? 0 : 0.025
     const bloomSpread = this.bloom * 0.016
     const spread = (aiming ? weapon.spreadAim : weapon.spreadHip) + movement + air + bloomSpread
-    this.spread01 = THREE.MathUtils.clamp(spread / 0.14, 0, 1)
+    this.spread01 = weapon.kind === 'gun' ? THREE.MathUtils.clamp(spread / 0.14, 0, 1) : 0
 
     this.updateShells(dt)
     this.animate(dt, player)
@@ -495,6 +599,23 @@ export class WeaponSystem {
 
   private fire() {
     const weapon = this.weapon
+    if (weapon.kind !== 'gun') {
+      this.queued = false
+      this.cooldown = 1 / weapon.rate
+      this.swingT = 0
+      this.kick = Math.min(1, this.kick + 0.4)
+      if (weapon.kind === 'melee') {
+        this.audio.slash()
+        this.hooks.onMelee(weapon)
+      } else if (weapon.kind === 'shovel') {
+        this.audio.dig()
+        this.hooks.onDig(weapon)
+      } else {
+        this.audio.equip()
+        this.hooks.onPlace(weapon)
+      }
+      return
+    }
     if (this.ammo[this.index] <= 0) {
       this.queued = false
       this.cooldown = 0.4
@@ -567,20 +688,57 @@ export class WeaponSystem {
     const lift = 1 - this.switchT
     const reloadPhase = this.reloading ? Math.min(1, this.reloadT / this.weapon.reload) : 0
     const dip = Math.sin(reloadPhase * Math.PI)
-    const swayScale = 1 - this.aimLerp * 0.72
+    // Tools never square up on the crosshair: they stay held at the hip.
+    const aim = this.weapon.kind === 'gun' ? this.aimLerp : this.aimLerp * 0.22
+    // Tools are not barrels: each one carries its own rest tilt so the blade /
+    // rungs read at hip instead of foreshortening down the view axis.
+    const tool = TOOL_POSE[this.weapon.kind]
+    const swayScale = 1 - aim * 0.72
 
-    _v.copy(HIP).lerp(ADS, this.aimLerp)
+    _v.copy(HIP).lerp(ADS, aim)
     _v.x += bobX * (1 - this.aimLerp * 0.7) + this.swayX * swayScale + Math.cos(this.time * 1.3) * 0.0025 * idle
     _v.y += bobY + this.swayY * swayScale - player.landDip * 0.45 - lift * 0.5 + this.kick * 0.018 - dip * 0.13 + Math.sin(this.time * 1.9) * 0.004 * idle
     _v.z += this.kick * 0.06
+    if (tool) {
+      _v.x += tool.dx
+      _v.y += tool.dy
+      _v.z += tool.dz
+    }
     group.position.lerp(_v, 1 - Math.exp(-24 * dt))
 
-    const rotX = this.kick * 0.24 - lift * 0.7 + dip * 0.55
-    const rotY = this.swayX * 3.2 * swayScale + (1 - this.aimLerp) * 0.15 + Math.sin(this.time * 1.1) * 0.008 * idle
+    const tiltX = tool ? tool.rx : 0
+    const tiltY = tool ? tool.ry : 0
+    const rotX = tiltX + this.kick * 0.24 - lift * 0.7 + dip * 0.55
+    const rotY = tiltY + this.swayX * 3.2 * swayScale + (1 - aim) * 0.15 + Math.sin(this.time * 1.1) * 0.008 * idle
     const rotZ = lift * 0.35 + Math.sin(phase) * 0.012 * moving + dip * 0.2
     group.rotation.x += (rotX - group.rotation.x) * Math.min(1, dt * 18)
     group.rotation.y += (rotY - group.rotation.y) * Math.min(1, dt * 12)
     group.rotation.z += (rotZ - group.rotation.z) * Math.min(1, dt * 12)
+
+    if (this.weapon.kind !== 'gun' && this.swingT >= 0) {
+      const dur = this.weapon.kind === 'shovel' ? 0.5 : 0.32
+      const u = Math.min(1, this.swingT / dur)
+      const arc = Math.sin(u * Math.PI)
+      const ease = u * u * (3 - 2 * u)
+      if (this.weapon.kind === 'melee') {
+        // Right-to-left slash that finishes low and forward.
+        group.rotation.y += 0.4 - 1.5 * ease
+        group.rotation.z += -0.75 * arc
+        group.rotation.x += 0.5 * arc
+        group.position.x -= 0.1 * arc
+        group.position.y -= 0.03 * arc
+        group.position.z -= 0.14 * arc
+      } else if (this.weapon.kind === 'shovel') {
+        // Drive the blade down and in, then lift back out.
+        const down = Math.sin(Math.min(1, u * 1.5) * Math.PI * 0.5)
+        group.rotation.x += 0.65 * down - 0.7 * arc
+        group.position.y -= 0.16 * arc
+        group.position.z -= 0.1 * arc
+      } else {
+        group.rotation.x -= 0.5 * arc
+        group.position.y += 0.07 * arc
+      }
+    }
 
     if (model.mag) model.mag.position.y = model.magBase.y - dip * 0.11
     // Grips that sit off-centre on the model are nudged in the hip pose only; aimed

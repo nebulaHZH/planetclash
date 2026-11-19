@@ -4,6 +4,7 @@ import { COLORS, type CharacterConfig } from '../config'
 const WHITE = new THREE.Color('#ffffff')
 
 let gradient: THREE.DataTexture | null = null
+let softGradient: THREE.DataTexture | null = null
 /** Three-step toon ramp: highlight, mid, violet shadow. */
 export function gradientMap(): THREE.DataTexture {
   if (gradient) return gradient
@@ -18,6 +19,35 @@ export function gradientMap(): THREE.DataTexture {
   gradient.generateMipmaps = false
   gradient.needsUpdate = true
   return gradient
+}
+
+/**
+ * A gentler 8-step ramp for big curved surfaces. The 3-step ramp is right for
+ * props, but across a 9 m pit wall it turns one smooth bowl into two flat bands.
+ */
+export function softGradientMap(): THREE.DataTexture {
+  if (softGradient) return softGradient
+  const steps = 8
+  const data = new Uint8Array(steps * 4)
+  const light = new THREE.Color('#FFFFFF')
+  const mid = new THREE.Color('#CDB4DE')
+  const dark = new THREE.Color('#684691')
+  const c = new THREE.Color()
+  for (let i = 0; i < steps; i++) {
+    const u = i / (steps - 1)
+    if (u < 0.45) c.copy(light).lerp(mid, u / 0.45)
+    else c.copy(mid).lerp(dark, (u - 0.45) / 0.55)
+    data[i * 4] = Math.round(c.r * 255)
+    data[i * 4 + 1] = Math.round(c.g * 255)
+    data[i * 4 + 2] = Math.round(c.b * 255)
+    data[i * 4 + 3] = 255
+  }
+  softGradient = new THREE.DataTexture(data, steps, 1, THREE.RGBAFormat)
+  softGradient.magFilter = THREE.NearestFilter
+  softGradient.minFilter = THREE.NearestFilter
+  softGradient.generateMipmaps = false
+  softGradient.needsUpdate = true
+  return softGradient
 }
 
 export const OUTLINE_MAT = new THREE.MeshBasicMaterial({

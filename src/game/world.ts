@@ -1,15 +1,28 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { COLORS, PHYSICS } from '../config'
-import { flagTexture, gradientMap, outlined, radialTexture, signTexture, toon } from './toon'
+import { flagTexture, gradientMap, outlined, radialTexture, signTexture, softGradientMap, toon } from './toon'
 import { seeded, type Obstacle } from './props'
 import { buildCoverSet, type CoverAsset, type CoverKind } from './cover'
 import { ENEMY_SPAWNS, PAD_SPAWNS, SPAWN_LATLON } from './landmarks'
 
 const R = PHYSICS.radius
 const Y = new THREE.Vector3(0, 1, 0)
+const X = new THREE.Vector3(1, 0, 0)
 const _n = new THREE.Vector3()
 const _jitter = new THREE.Vector3()
+const _dig = new THREE.Vector3()
+const _col = new THREE.Color()
+const _aimN = new THREE.Vector3()
+const _m = new THREE.Matrix4()
+const _aim = new THREE.Vector3()
+const _hit = new THREE.Vector3()
+const _vA = new THREE.Vector3()
+const _vB = new THREE.Vector3()
+const _vC = new THREE.Vector3()
+const _vD = new THREE.Vector3()
+const SOIL = new THREE.Color('#B07C55')
+const SOIL_DEEP = new THREE.Color('#7C5138')
 
 export function dirFromLatLon(latDeg: number, lonDeg: number): THREE.Vector3 {
   const lat = (latDeg * Math.PI) / 180
@@ -18,8 +31,8 @@ export function dirFromLatLon(latDeg: number, lonDeg: number): THREE.Vector3 {
   return new THREE.Vector3(Math.cos(lon) * c, Math.sin(lat), Math.sin(lon) * c)
 }
 
-/** Analytic walking surface — the same function used to displace the mesh. */
-export function surfaceRadius(dir: THREE.Vector3): number {
+/** Rolling planet surface before anyone has touched a shovel. */
+export function plainRadius(dir: THREE.Vector3): number {
   _n.copy(dir).normalize()
   const n =
     Math.sin(_n.x * 8 + _n.z * 5.2) * 3.0 +
@@ -28,6 +41,91 @@ export function surfaceRadius(dir: THREE.Vector3): number {
     Math.sin((_n.x + _n.y + _n.z) * 38) * 0.2 +
     Math.sin(_n.z * 61 - _n.y * 43) * 0.07
   return R + 3.4 + n
+}
+
+/* --------------------------------------------------------------- digging */
+
+export type DigHole = {
+  /** Unit direction of the pit centre. */
+  dir: THREE.Vector3
+  /** Cup radius in metres measured along the surface. */
+  radius: number
+  /** How far the floor sits below the untouched surface. */
+  depth: number
+}
+
+/** One scoop of the shovel, in metres. */
+export const DIG_STEP = 0.62
+/** Past this the planet would be a shell, not a ball. */
+export const DIG_MAX = 11
+
+const DIGS: DigHole[] = []
+/** Pits beyond this are forgotten so the analytic surface stays cheap. */
+const DIG_LIMIT = 32
+
+export function digHoles(): readonly DigHole[] {
+  return DIGS
+}
+
+export function clearDigs() {
+  DIGS.length = 0
+}
+
+const smoothstep = (t: number) => {
+  const x = THREE.MathUtils.clamp(t, 0, 1)
+  return x * x * (3 - 2 * x)
+}
+
+/** Depth removed at `dir` by every pit, deepest wins so overlaps stay flat. */
+export function digDrop(dir: THREE.Vector3): number {
+  let drop = 0
+  for (const hole of DIGS) {
+    if (hole.depth <= drop) continue
+    const dot = THREE.MathUtils.clamp(dir.dot(hole.dir), -1, 1)
+    if (dot < 0.2) continue
+    const arc = Math.acos(dot) * R
+    if (arc >= hole.radius) continue
+    const t = 1 - arc / hole.radius
+    const f = smoothstep((t - 0.08) / 0.42)
+    const d = f * hole.depth
+    if (d > drop) drop = d
+  }
+  return drop
+}
+
+/** Analytic walking surface — the same function used to displace the mesh. */
+export function surfaceRadius(dir: THREE.Vector3): number {
+  const base = plainRadius(dir)
+  return DIGS.length === 0 ? base : base - digDrop(dir)
+}
+
+/**
+ * Shovel at `dir`. Returns the pit that now owns that spot, so the world can
+ * resculpt the mesh around it.
+ */
+export function digAt(dir: THREE.Vector3): DigHole {
+  const target = dir.clone().normalize()
+  // Grow the crater you are already standing in. Stamping a second bowl on top
+  // of the first leaves a lumpy double-rim that reads as a bug, not a hole.
+  let host: DigHole | null = null
+  let bestArc = Infinity
+  for (const hole of DIGS) {
+    const arc = hole.dir.angleTo(target) * R
+    if (arc > hole.radius * 1.05 || arc >= bestArc) continue
+    bestArc = arc
+    host = hole
+  }
+  if (host) {
+    host.dir.lerp(target, 0.22).normalize()
+    host.depth = Math.min(DIG_MAX, Math.max(host.depth, digDrop(target)) + DIG_STEP)
+    host.radius = Math.min(5.2, 1.7 + host.depth * 0.26)
+    return host
+  }
+  const depth = Math.min(DIG_MAX, digDrop(target) + DIG_STEP)
+  const hole: DigHole = { dir: target, radius: Math.min(5.2, 1.7 + depth * 0.26), depth }
+  DIGS.push(hole)
+  while (DIGS.length > DIG_LIMIT) DIGS.shift()
+  return hole
 }
 
 /** Analytic surface normal, so props stand flat on hills instead of the radial. */
@@ -113,7 +211,7 @@ function zoneColor(dir: THREE.Vector3, out: THREE.Color) {
     Math.sin(lon * 3.1 + lat * 4.7) * 0.5 +
     Math.sin(lon * 6.3 - lat * 3.9) * 0.3 +
     Math.sin(lat * 9.7) * 0.2
-  const relief = surfaceRadius(dir) - (R + 3.4)
+  const relief = plainRadius(dir) - (R + 3.4)
 
   out.copy(MEADOW)
   for (const sea of SEAS) {
@@ -163,6 +261,9 @@ export type CapturePad = {
   captured: boolean
 }
 
+/** A dug pit: the hole data plus the high-res shell drawn over the coarse planet. */
+type PIT = { hole: DigHole; mesh: THREE.Mesh }
+
 type Spinner = { obj: THREE.Object3D; axis: 'x' | 'y' | 'z'; speed: number }
 type Floater = { obj: THREE.Object3D; base: THREE.Vector3; axis: THREE.Vector3; amp: number; speed: number; phase: number }
 
@@ -173,13 +274,19 @@ export class World {
   obstacles: Obstacle[] = []
   solids: THREE.Object3D[] = []
   propsReady = false
+  /** One high-res patch per pit, riding on top of the coarse planet shell. */
+  pits: PIT[] = []
   private scene: THREE.Scene
   private propLoad: Promise<void> | null = null
   private spinners: Spinner[] = []
   private floaters: Floater[] = []
   private sky: THREE.Group
   private time = 0
+  /** Unit direction of every planet vertex, kept for resculpting after a dig. */
+  private groundDirs = new Float32Array(0)
+  private detail: { mesh: THREE.InstancedMesh; dirs: Float32Array; used: number; original: Float32Array }[] = []
   private mats: Record<string, THREE.MeshToonMaterial>
+  private pitMat: THREE.MeshToonMaterial | null = null
 
   constructor(scene: THREE.Scene) {
     this.scene = scene
@@ -462,10 +569,14 @@ export class World {
     const geo = new THREE.IcosahedronGeometry(1, 64)
     const pos = geo.attributes.position
     const colors = new Float32Array(pos.count * 3)
+    this.groundDirs = new Float32Array(pos.count * 3)
     const dir = new THREE.Vector3()
     const color = new THREE.Color()
     for (let i = 0; i < pos.count; i++) {
       dir.fromBufferAttribute(pos, i).normalize()
+      this.groundDirs[i * 3] = dir.x
+      this.groundDirs[i * 3 + 1] = dir.y
+      this.groundDirs[i * 3 + 2] = dir.z
       const radius = surfaceRadius(dir)
       pos.setXYZ(i, dir.x * radius, dir.y * radius, dir.z * radius)
       zoneColor(dir, color)
@@ -489,6 +600,265 @@ export class World {
     )
     mesh.add(glow)
     return mesh
+  }
+
+  /* ------------------------------------------------------------ digging */
+
+  /** The pit whose floor contains `dir`, deepest first. */
+  pitAt(dir: THREE.Vector3): DigHole | null {
+    let best: DigHole | null = null
+    for (const hole of digHoles()) {
+      if (dir.angleTo(hole.dir) * R > hole.radius * 0.92) continue
+      if (!best || hole.depth > best.depth) best = hole
+    }
+    return best
+  }
+
+  /** How much dirt sits in the pit at `dir` (0 = untouched grass). */
+  depthAt(dir: THREE.Vector3): number {
+    return digDrop(dir)
+  }
+
+  /**
+   * Shovel one scoop at `dir`. The coarse sphere shell is pushed under the pit
+   * and a high-res patch is laid on the analytic surface, so the hole keeps the
+   * toy-clean low-poly look of the planet while still being metres deep.
+   */
+  dig(dir: THREE.Vector3): { depth: number; radius: number } {
+    const hole = digAt(dir)
+    this.sinkGround(hole)
+    this.dropDetail(hole)
+    this.pits = this.pits.filter((pit) => {
+      if (digHoles().includes(pit.hole)) return true
+      this.scene.remove(pit.mesh)
+      pit.mesh.geometry.dispose()
+      ;(pit.mesh.material as THREE.Material).dispose()
+      return false
+    })
+    this.pushPit(hole)
+    return { depth: hole.depth, radius: hole.radius }
+  }
+
+  /**
+   * Flatten the coarse shell under the pit footprint. It is a fixed-detail
+   * icosahedron, so it cannot follow a 5 m bowl: its long chords would rise
+   * back up through the liner. Instead every vertex inside the liner gets
+   * pushed well below the deepest point, and the liner alone is visible.
+   */
+  private sinkGround(hole: DigHole) {
+    const geo = this.planet.geometry
+    const pos = geo.attributes.position as THREE.BufferAttribute
+    const arr = pos.array as Float32Array
+    const dirs = this.groundDirs
+    if (dirs.length !== pos.count * 3) return
+    const cos = Math.cos((hole.radius * 1.45 + 0.6) / R)
+    const floor = surfaceRadius(hole.dir) - 1.1
+    const { x: hx, y: hy, z: hz } = hole.dir
+    let touched = false
+    for (let i = 0, n = pos.count; i < n; i++) {
+      const x = dirs[i * 3]
+      const y = dirs[i * 3 + 1]
+      const z = dirs[i * 3 + 2]
+      if (x * hx + y * hy + z * hz < cos) continue
+      _dig.set(x, y, z)
+      const r = Math.min(surfaceRadius(_dig) - 0.8, floor)
+      arr[i * 3] = x * r
+      arr[i * 3 + 1] = y * r
+      arr[i * 3 + 2] = z * r
+      touched = true
+    }
+    if (touched) pos.needsUpdate = true
+  }
+
+  /** Grass, flowers and pebbles that were standing where the pit now is. */
+  private dropDetail(hole: DigHole) {
+    const cos = Math.cos((hole.radius * 1.05) / R)
+    const { x: hx, y: hy, z: hz } = hole.dir
+    const zero = _dig.set(0, 0, 0)
+    for (const entry of this.detail) {
+      let touched = false
+      for (let i = 0; i < entry.used; i++) {
+        if (entry.dirs[i * 3] * hx + entry.dirs[i * 3 + 1] * hy + entry.dirs[i * 3 + 2] * hz < cos) continue
+        entry.mesh.setMatrixAt(i, _m.makeScale(0, 0, 0).setPosition(zero))
+        touched = true
+      }
+      if (touched) entry.mesh.instanceMatrix.needsUpdate = true
+    }
+  }
+
+  /** Build (or rebuild) the high-res patch that lines the pit. */
+  private pushPit(hole: DigHole) {
+    const existing = this.pits.find((pit) => pit.hole === hole)
+    const lift = 0.04 + this.pits.length * 0.006
+    const mesh = this.buildPitMesh(hole, lift)
+    if (existing) {
+      existing.mesh.geometry.dispose()
+      existing.mesh.geometry = mesh.geometry
+      return
+    }
+    this.scene.add(mesh)
+    this.pits.push({ hole, mesh })
+  }
+
+  /**
+   * The planet shell is a fixed-detail icosahedron, so a deep scoop is drawn as
+   * its own patch riding just above it. Normals come straight from the analytic
+   * height field: the mesh is far too coarse around the wall for
+   * `computeVertexNormals` to read as a bowl.
+   */
+  private buildPitMesh(hole: DigHole, lift: number) {
+    const rings = 30
+    const segs = 56
+    const outer = Math.min(R * 0.5, hole.radius * 1.45 + 0.8)
+    const inner = hole.radius * 0.5
+    const rim = hole.radius
+    const up = hole.dir
+    const e1 = new THREE.Vector3().crossVectors(up, Math.abs(up.y) > 0.9 ? X : Y).normalize()
+    const e2 = new THREE.Vector3().crossVectors(up, e1).normalize()
+    // Rings: a few across the flat floor, most of them down the wall, a few on
+    // the apron that hides the shell's coarse chord.
+    const arcAt = (t: number) => {
+      if (t < 0.14) return (t / 0.14) * inner
+      if (t < 0.74) return inner + ((t - 0.14) / 0.6) * (rim - inner)
+      return rim + ((t - 0.74) / 0.26) * (outer - rim)
+    }
+    const count = (rings + 1) * segs
+    const pos = new Float32Array(count * 3)
+    const col = new Float32Array(count * 3)
+    const nrm = new Float32Array(count * 3)
+    const dir = new THREE.Vector3()
+    const q1 = new THREE.Vector3()
+    const q2 = new THREE.Vector3()
+    const q3 = new THREE.Vector3()
+    const q4 = new THREE.Vector3()
+    const eps = 0.35 / R
+    for (let i = 0; i <= rings; i++) {
+      const arc = arcAt(i / rings)
+      const sin = Math.sin(arc / R)
+      const cos = Math.cos(arc / R)
+      for (let j = 0; j < segs; j++) {
+        const a = (j / segs) * Math.PI * 2
+        dir.copy(up).multiplyScalar(cos)
+          .addScaledVector(e1, Math.sin(a) * sin)
+          .addScaledVector(e2, Math.cos(a) * sin)
+          .normalize()
+        const k = (i * segs + j) * 3
+        const r = surfaceRadius(dir) + lift
+        pos[k] = dir.x * r
+        pos[k + 1] = dir.y * r
+        pos[k + 2] = dir.z * r
+        const s1 = (surfaceRadius(q1.copy(dir).addScaledVector(e1, eps).normalize())
+          - surfaceRadius(q2.copy(dir).addScaledVector(e1, -eps).normalize())) / (2 * eps * R)
+        const s2 = (surfaceRadius(q3.copy(dir).addScaledVector(e2, eps).normalize())
+          - surfaceRadius(q4.copy(dir).addScaledVector(e2, -eps).normalize())) / (2 * eps * R)
+        _vA.copy(dir).addScaledVector(e1, -s1).addScaledVector(e2, -s2).normalize()
+        nrm[k] = _vA.x
+        nrm[k + 1] = _vA.y
+        nrm[k + 2] = _vA.z
+        const drop = digDrop(dir)
+        zoneColor(dir, _col)
+        _col.lerp(SOIL, Math.min(1, drop / 0.55))
+        _col.lerp(SOIL_DEEP, THREE.MathUtils.clamp(drop / (DIG_MAX * 1.4), 0, 0.55))
+        col[k] = _col.r
+        col[k + 1] = _col.g
+        col[k + 2] = _col.b
+      }
+    }
+    const index: number[] = []
+    for (let i = 0; i < rings; i++) {
+      for (let j = 0; j < segs; j++) {
+        const a = i * segs + j
+        const b = i * segs + ((j + 1) % segs)
+        const c = (i + 1) * segs + j
+        const d = (i + 1) * segs + ((j + 1) % segs)
+        index.push(a, c, b, b, c, d)
+      }
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3))
+    geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3))
+    geo.setIndex(index)
+    // Winding: test the first triangle on the flat floor against its analytic
+    // normal (the ring-0 fan is degenerate, so start further out).
+    const t0 = (rings >> 1) * segs
+    _vB.fromArray(pos, t0 * 3)
+    _vC.subVectors(_vC.fromArray(pos, (t0 + segs) * 3), _vB)
+    _vD.subVectors(_vD.fromArray(pos, (t0 + 1) * 3), _vB)
+    if (_vC.cross(_vD).dot(_vA.fromArray(nrm, t0 * 3)) < 0) {
+      for (let i = 0; i < index.length; i += 3) {
+        const tmp = index[i + 1]
+        index[i + 1] = index[i + 2]
+        index[i + 2] = tmp
+      }
+      geo.setIndex(index)
+    }
+    const mesh = new THREE.Mesh(geo, this.pitMaterial())
+    mesh.name = 'pit'
+    mesh.receiveShadow = true
+    return mesh
+  }
+
+  private pitMaterial() {
+    if (!this.pitMat) this.pitMat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: softGradientMap() })
+    return this.pitMat
+  }
+
+  /** Undo every pit — used when a match restarts. */
+  resetDigs() {
+    if (this.pits.length === 0 && digHoles().length === 0) return
+    clearDigs()
+    for (const pit of this.pits) {
+      this.scene.remove(pit.mesh)
+      pit.mesh.geometry.dispose()
+    }
+    this.pits.length = 0
+    for (const entry of this.detail) {
+      ;(entry.mesh.instanceMatrix.array as Float32Array).set(entry.original, 0)
+      entry.mesh.instanceMatrix.needsUpdate = true
+    }
+    const geo = this.planet.geometry
+    const pos = geo.attributes.position as THREE.BufferAttribute
+    const arr = pos.array as Float32Array
+    const dirs = this.groundDirs
+    for (let i = 0, n = pos.count; i < n; i++) {
+      _dig.set(dirs[i * 3], dirs[i * 3 + 1], dirs[i * 3 + 2])
+      const r = plainRadius(_dig)
+      arr[i * 3] = _dig.x * r
+      arr[i * 3 + 1] = _dig.y * r
+      arr[i * 3 + 2] = _dig.z * r
+    }
+    pos.needsUpdate = true
+    geo.computeVertexNormals()
+    geo.computeBoundingSphere()
+  }
+
+  /** Where the crosshair meets the ground, for digging and ladder placement. */
+  aimGround(origin: THREE.Vector3, forward: THREE.Vector3, maxDist: number): THREE.Vector3 | null {
+    // `surfaceRadius` takes a unit direction, so every sample is normalised
+    // first — an un-normalised probe reads as "dead centre of the pit" and the
+    // whole march silently misses.
+    const blocked = (t: number) => {
+      _aim.copy(origin).addScaledVector(forward, t)
+      const len = _aim.length() || 1
+      return len <= surfaceRadius(_aimN.copy(_aim).divideScalar(len)) ? len : 0
+    }
+    let prev = 0
+    for (let t = 0.35; t <= maxDist; t += 0.3) {
+      if (blocked(t)) {
+        let lo = prev
+        let hi = t
+        for (let k = 0; k < 7; k++) {
+          const mid = (lo + hi) * 0.5
+          if (blocked(mid)) hi = mid
+          else lo = mid
+        }
+        _aim.copy(origin).addScaledVector(forward, hi)
+        return _hit.copy(_aim)
+      }
+      prev = t
+    }
+    return null
   }
 
   private place(obj: THREE.Object3D, dir: THREE.Vector3, lift = 0, scale = 1) {
@@ -774,6 +1144,7 @@ export class World {
       const mat = toon(COLORS.white)
       const mesh = new THREE.InstancedMesh(geometry, mat, count)
       mesh.frustumCulled = false
+      const dirs = new Float32Array(count * 3)
       let n = 0
       for (let i = 0; i < count; i++) {
         if (center) dir.copy(center).add(_jitter.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.42)).normalize()
@@ -791,6 +1162,9 @@ export class World {
         dummy.scale.set(s, s * THREE.MathUtils.lerp(yStretch[0], yStretch[1], Math.random()), s)
         dummy.updateMatrix()
         mesh.setMatrixAt(n, dummy.matrix)
+        dirs[n * 3] = dir.x
+        dirs[n * 3 + 1] = dir.y
+        dirs[n * 3 + 2] = dir.z
         color.set(tones[(Math.random() * tones.length) | 0])
         if (Math.random() < 0.18) color.offsetHSL(0, 0, 0.06)
         mesh.setColorAt(n, color)
@@ -800,6 +1174,12 @@ export class World {
       mesh.instanceMatrix.needsUpdate = true
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
       scene.add(mesh)
+      this.detail.push({
+        mesh,
+        dirs,
+        used: n,
+        original: (mesh.instanceMatrix.array as Float32Array).slice(0, n * 16),
+      })
     }
 
     scatter(14000, this.grassTuft(), 0.1, [0.8, 1.3], [0.55, 1.15], grassTones)

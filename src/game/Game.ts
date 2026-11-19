@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import { CHARACTERS, COLORS, GAME, PHYSICS, type CharacterConfig, type WeaponConfig } from '../config'
 import type { GameCallbacks, HudState } from '../types'
-import { World, dirFromLatLon, surfaceRadius } from './world'
+import { DIG_MAX, World, dirFromLatLon, surfaceRadius } from './world'
+import { LadderField } from './ladder'
 import { Player } from './player'
 import { WeaponSystem } from './weapons'
 import { EnemyManager, enemyHeadshot, enemyIdFrom, type Enemy } from './enemies'
@@ -30,6 +31,7 @@ export class Game {
   private player: Player
   private weapons: WeaponSystem
   private enemies: EnemyManager
+  private ladders = new LadderField()
   private fx: Fx
   private audio = new GameAudio()
   private callbacks: GameCallbacks
@@ -114,7 +116,11 @@ export class Game {
       onEmpty: () => this.toast('弹匣空了 — 按 R 换弹', 'bad'),
       onReload: () => {},
       onSwap: () => {},
+      onMelee: (weapon) => this.swing(weapon),
+      onDig: (weapon) => this.digGround(weapon),
+      onPlace: () => this.placeLadder(),
     })
+    this.scene.add(this.ladders.group)
     this.weapons.setCharacter(this.character)
     this.enemies = new EnemyManager(this.scene, this.fx, this.audio)
     this.player.obstacles = this.world.obstacles
@@ -152,6 +158,8 @@ export class Game {
     this.enemies.reset()
     this.fx.reset()
     this.world.resetPads()
+    this.world.resetDigs()
+    this.ladders.reset()
     this.kills = 0
     this.shots = 0
     this.hits = 0
@@ -286,6 +294,9 @@ export class Game {
     } else if (event.code === 'Digit1') this.weapons.select(0)
     else if (event.code === 'Digit2') this.weapons.select(1)
     else if (event.code === 'Digit3') this.weapons.select(2)
+    else if (event.code === 'Digit4') this.weapons.select(3)
+    else if (event.code === 'Digit5') this.weapons.select(4)
+    else if (event.code === 'Digit6') this.weapons.select(5)
     else if (event.code === 'KeyQ') this.weapons.cycle(-1)
     else if (event.code === 'KeyE') this.weapons.cycle(1)
     else if (event.code === 'Escape' && this.fallbackLock) this.pause()
@@ -475,7 +486,14 @@ export class Game {
     const strafe = (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) - (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0)
     const sprint = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')
 
-    this.player.update(dt, { forward, strafe, sprint, aim: this.aiming, jumpHeld: this.keys.has('Space') })
+    this.player.update(dt, {
+      forward,
+      strafe,
+      sprint,
+      aim: this.aiming,
+      jumpHeld: this.keys.has('Space'),
+      ladder: this.ladders.nearest(this.player.dir),
+    })
 
     if (this.player.jumpedThisFrame) {
       this.audio.jump()
@@ -642,6 +660,111 @@ export class Game {
       this.recoil = Math.min(0.22, this.recoil + weapon.recoil * 0.011)
       this.callbacks.onEvent({ kind: 'hit', headshot: anyHead })
     }
+  }
+
+  /** Knife: short cone in front of the camera, no raycast, no ammo. */
+  private swing(weapon: WeaponConfig) {
+    if (!this.running || this.paused || this.ended) return
+    const eye = this.camera.position
+    const forward = this.camera.getWorldDirection(_forward)
+    let best: Enemy | null = null
+    let bestDist = weapon.range
+    let bestPoint = _v.set(0, 0, 0)
+    for (const enemy of this.enemies.enemies) {
+      if (enemy.defeated) continue
+      const to = _v2.copy(enemy.pos).addScaledVector(enemy.up, 0.75).sub(eye)
+      const dist = to.length() - 0.55
+      if (dist > bestDist) continue
+      if (to.normalize().dot(forward) < 0.55) continue
+      bestDist = dist
+      best = enemy
+      bestPoint = _v3.copy(enemy.pos).addScaledVector(enemy.up, 0.75)
+    }
+    if (!best) {
+      this.fx.ring(eye.clone().addScaledVector(forward, 1.1), this.player.dir, COLORS.white, 0.5)
+      return
+    }
+    const head = bestPoint.clone().sub(eye).normalize().dot(forward) > 0.93
+    const killed = this.enemies.damage(best, weapon.damage * (head ? GAME.headshotMult : 1))
+    this.hits += 1
+    this.shots += 1
+    this.audio.hit(head)
+    const point = bestPoint.clone()
+    this.fx.burst(point, 12, { colors: [COLORS.lemon, COLORS.white, COLORS.candy], speed: 3.6, size: 0.08, life: 0.32, up: best.up })
+    this.fx.flash(point, COLORS.lemon, 1)
+    this.showDamage(point, Math.round(weapon.damage), head)
+    this.fx.ring(point, best.up, COLORS.candy, 1.2)
+    this.hitstop = Math.max(this.hitstop, 0.05)
+    this.shake = Math.min(1, this.shake + 0.2)
+    this.callbacks.onEvent({ kind: 'hit', headshot: head })
+    if (killed) this.onKill(best, point, head)
+  }
+
+  /**
+   * Ground point under the crosshair. The ray can fall short when it grazes a
+   * slope, so if you are plainly looking down it falls back to a spot a short
+   * step in front of your feet — the shovel should never feel finicky.
+   */
+  private groundPoint(maxDist: number): THREE.Vector3 | null {
+    const forward = this.camera.getWorldDirection(_forward)
+    const hit = this.world.aimGround(this.camera.position, forward, maxDist)
+    if (hit) return hit
+    if (forward.dot(this.player.dir) > -0.22) return null
+    const foot = _v.copy(this.player.dir).addScaledVector(this.player.heading, 1.7 / PHYSICS.radius).normalize()
+    return new THREE.Vector3().copy(foot).multiplyScalar(surfaceRadius(foot))
+  }
+
+  /** Shovel: bite a conical pit out of the planet right under the crosshair. */
+  private digGround(weapon: WeaponConfig) {
+    if (!this.running || this.paused || this.ended) return
+    const hit = this.groundPoint(Math.max(weapon.range, 7))
+    if (!hit) {
+      this.toast('对着地面才能挖', 'bad')
+      return
+    }
+    const dir = hit.clone().normalize()
+    for (const obstacle of this.world.obstacles) {
+      if (dir.angleTo(obstacle.dir) * PHYSICS.radius < obstacle.radius + 1.1) {
+        this.toast('旁边有东西，挖不动', 'bad')
+        return
+      }
+    }
+    const before = this.world.depthAt(dir)
+    const hole = this.world.dig(dir)
+    this.audio.dig()
+    this.fx.burst(hit, 16, { colors: ['#B9825C', '#8A5A44', COLORS.lemon], speed: 3.4, size: 0.11, life: 0.55, up: dir })
+    this.fx.ring(hit, dir, COLORS.lemon, 1.5)
+    this.shake = Math.min(1, this.shake + 0.12)
+    if (hole.depth >= DIG_MAX) {
+      this.toast('挖到地心啦 · 放个梯子吧', 'gold')
+    } else if (hole.depth >= 2 && hole.depth - before < 1) {
+      this.toast(`已经挖了 ${hole.depth.toFixed(1)} 米 · 记得带梯子`, 'good')
+    }
+    this.emitHud()
+  }
+
+  /** Ladder: drop one at the bottom of whatever pit is under the crosshair. */
+  private placeLadder() {
+    if (!this.running || this.paused || this.ended) return
+    const hit = this.groundPoint(6)
+    if (!hit) {
+      this.toast('对准地面才能放梯子', 'bad')
+      return
+    }
+    const aim = hit.clone().normalize()
+    // Inside a pit, stand the ladder on the floor instead of on the wall.
+    const pit = this.world.pitAt(aim)
+    const foot = pit ? pit.dir : aim
+    const ladder = this.ladders.place(foot)
+    if (!ladder) {
+      this.toast('这里已经放满了梯子', 'bad')
+      return
+    }
+    const footPoint = foot.clone().multiplyScalar(ladder.base)
+    this.audio.placeLadder()
+    this.fx.ring(footPoint, foot, COLORS.lemon, 1.6)
+    this.fx.burst(footPoint, 8, { colors: [COLORS.lemon, COLORS.white], speed: 2.2, size: 0.09, life: 0.4, up: foot })
+    this.toast(pit ? '梯子放好了 · 走进坑里按 W 往上爬' : '梯子放好了 · 走过去按 W 就能爬', 'good')
   }
 
   private onKill(enemy: Enemy, point: THREE.Vector3, headshot: boolean) {

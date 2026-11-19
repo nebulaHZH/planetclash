@@ -125,12 +125,16 @@ export const CHARACTERS: CharacterConfig[] = [
   },
 ]
 
+/** Guns fire bullets; the rest are handled entirely in `weapons.ts` + `Game.ts`. */
+export type WeaponKind = 'gun' | 'melee' | 'shovel' | 'ladder'
+
 export type WeaponConfig = {
   id: string
   name: string
   short: string
   icon: string
   color: string
+  kind: WeaponKind
   auto: boolean
   /** shots per second */
   rate: number
@@ -147,7 +151,7 @@ export type WeaponConfig = {
   falloffStart: number
   reload: number
   draw: number
-  viewmodel: 'pistol' | 'smg' | 'shotgun'
+  viewmodel: 'pistol' | 'smg' | 'shotgun' | 'knife' | 'shovel' | 'ladder'
   tagline: string
   sound: 'pew' | 'brr' | 'boom'
 }
@@ -155,20 +159,39 @@ export type WeaponConfig = {
 export const WEAPONS: WeaponConfig[] = [
   {
     id: 'bubble', name: '泡泡枪', short: 'BUBBLE', icon: '◉', color: COLORS.sky,
-    auto: false, rate: 3, damage: 26, magazine: 12, reserve: 48, pellets: 1,
+    kind: 'gun', auto: false, rate: 3, damage: 26, magazine: 12, reserve: 48, pellets: 1,
     spreadHip: .006, spreadAim: .0015, recoil: .85, range: 90, falloffStart: 40,
     reload: 1, draw: .3, viewmodel: 'pistol', tagline: '单发 · 精准 · 高伤', sound: 'pew',
   },
   {
     id: 'spray', name: '彩虹喷射', short: 'RAINBOW', icon: '✦', color: COLORS.candy,
-    auto: true, rate: 11, damage: 9, magazine: 36, reserve: 108, pellets: 1,
+    kind: 'gun', auto: true, rate: 11, damage: 9, magazine: 36, reserve: 108, pellets: 1,
     spreadHip: .034, spreadAim: .014, recoil: .32, range: 70, falloffStart: 35,
     reload: 1.35, draw: .35, viewmodel: 'smg', tagline: '全自动 · 彩虹弹幕', sound: 'brr',
   },
   {
     id: 'star', name: '星星散弹', short: 'STAR', icon: '★', color: COLORS.gold,
-    auto: false, rate: .95, damage: 8, magazine: 6, reserve: 30, pellets: 8,
+    kind: 'gun', auto: false, rate: .95, damage: 8, magazine: 6, reserve: 30, pellets: 8,
     spreadHip: .11, spreadAim: .085, recoil: 2.6, range: 32, falloffStart: 11,
     reload: 1.5, draw: .42, viewmodel: 'shotgun', tagline: '八颗星 · 近距离清场', sound: 'boom',
+  },
+  // ---- tools. No ammo, no reload: left click swings, digs or places. ----
+  {
+    id: 'knife', name: '玩具小刀', short: 'KNIFE', icon: '⚔', color: '#FF8FB0',
+    kind: 'melee', auto: false, rate: 2.4, damage: 62, magazine: 0, reserve: 0, pellets: 1,
+    spreadHip: 0, spreadAim: 0, recoil: .3, range: 2.9, falloffStart: 2.9,
+    reload: 0, draw: .24, viewmodel: 'knife', tagline: '近战 · 一刀一个泡泡', sound: 'pew',
+  },
+  {
+    id: 'shovel', name: '小铲子', short: 'SHOVEL', icon: '⛏', color: '#C98B6B',
+    kind: 'shovel', auto: false, rate: 2.2, damage: 0, magazine: 0, reserve: 0, pellets: 1,
+    spreadHip: 0, spreadAim: 0, recoil: .5, range: 3.6, falloffStart: 3.6,
+    reload: 0, draw: .3, viewmodel: 'shovel', tagline: '挖地 · 一直挖就能挖到地心', sound: 'boom',
+  },
+  {
+    id: 'ladder', name: '小梯子', short: 'LADDER', icon: '≡', color: '#E0B27A',
+    kind: 'ladder', auto: false, rate: 1.1, damage: 0, magazine: 0, reserve: 0, pellets: 1,
+    spreadHip: 0, spreadAim: 0, recoil: 0, range: 4.2, falloffStart: 4.2,
+    reload: 0, draw: .28, viewmodel: 'ladder', tagline: '放置 · 站着就能爬回地面', sound: 'pew',
   },
 ]

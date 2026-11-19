@@ -103,6 +103,28 @@ export class GameAudio {
     this.tone(520, 660, 0.05, { type: 'square', gain: 0.04, delay: 0.04 })
   }
 
+  /** Knife through the air: a bright swish with a tiny metal ring. */
+  slash() {
+    this.hiss(0.13, { gain: 0.09, cutoff: 5200, type: 'highpass', q: 1.2 })
+    this.tone(1900, 620, 0.11, { type: 'sine', gain: 0.05 })
+  }
+
+  /** Shovel biting into candy soil. */
+  dig() {
+    this.hiss(0.16, { gain: 0.14, cutoff: 620 })
+    this.tone(190, 70, 0.14, { type: 'sine', gain: 0.13 })
+    this.tone(90, 46, 0.2, { type: 'triangle', gain: 0.09, delay: 0.02 })
+    this.hiss(0.1, { gain: 0.05, cutoff: 2400, type: 'bandpass', delay: 0.06 })
+  }
+
+  /** Ladder clattering into place. */
+  placeLadder() {
+    for (let i = 0; i < 3; i++) {
+      this.hiss(0.05, { gain: 0.07, cutoff: 1800 + i * 400, delay: i * 0.05 })
+      this.tone(240 + i * 60, 180, 0.06, { type: 'square', gain: 0.05, delay: i * 0.05 })
+    }
+  }
+
   jump() {
     this.tone(320, 620, 0.13, { type: 'sine', gain: 0.09 })
   }

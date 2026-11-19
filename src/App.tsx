@@ -58,6 +58,7 @@ export default function App() {
 
   const character = CHARACTERS.find((c) => c.id === characterId) ?? CHARACTERS[0]
   const weapon = WEAPONS[hud.weaponIndex] ?? WEAPONS[0]
+  const isGun = weapon.kind === 'gun'
   const kills = hud.enemiesTotal - hud.enemiesLeft
   const progress = Math.min(1, kills / hud.enemiesTotal)
 
@@ -288,6 +289,7 @@ export default function App() {
                 <span><kbd>SPACE</kbd> 跳跃</span>
                 <span><kbd>SHIFT</kbd> 冲刺</span>
                 <span><kbd>R</kbd> 换弹</span>
+                <span><kbd>1-6</kbd> 换武器</span>
                 <span><kbd>右键</kbd> 瞄准</span>
                 <span><kbd>ESC</kbd> 暂停</span>
               </div>
@@ -298,12 +300,16 @@ export default function App() {
                   <div className="weapon-copy">
                     <small>{weapon.short} · {weapon.tagline}</small>
                     <strong>{weapon.name}</strong>
-                    <span className={hud.ammo <= 2 ? 'ammo-low' : ''}>{hud.reloading ? '换弹中…' : '按 R 换弹'}</span>
+                    <span className={isGun && hud.ammo <= 2 ? 'ammo-low' : ''}>
+                      {isGun ? (hud.reloading ? '换弹中…' : '按 R 换弹') : '左键使用'}
+                    </span>
                   </div>
-                  <div className="ammo">
-                    <b>{hud.ammo}</b>
-                    <span>/ {hud.reserve}</span>
-                  </div>
+                  {isGun && (
+                    <div className="ammo">
+                      <b>{hud.ammo}</b>
+                      <span>/ {hud.reserve}</span>
+                    </div>
+                  )}
                   {hud.reloading && <div className="reload-line" style={{ width: `${hud.reloadProgress * 100}%` }} />}
                 </div>
                 <div className="weapon-tabs">

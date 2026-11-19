@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { PHYSICS } from '../config'
 import { surfaceRadius } from './world'
 import type { Obstacle } from './props'
+import type { Ladder } from './ladder'
 
 export type MoveInput = {
   forward: number
@@ -10,10 +11,15 @@ export type MoveInput = {
   aim: boolean
   /** Held down: keeps the jump tall. Tapping gives a short hop. */
   jumpHeld: boolean
+  /** Ladder the player is standing next to, if any. */
+  ladder: Ladder | null
 }
 
 const _up = new THREE.Vector3(0, 1, 0)
 const _away = new THREE.Vector3()
+/** Steeper than this and you need the ladder. */
+const MAX_SLOPE = 1.15
+const CLIMB_SPEED = 2.9
 
 export class Player {
   dir = new THREE.Vector3(0, 1, 0)
@@ -35,6 +41,8 @@ export class Player {
   moving = false
   speedNorm = 0
   obstacles: Obstacle[] = []
+  /** Set while hanging on a ladder; `alt` is then the height up the rails. */
+  climbing: Ladder | null = null
   private sprintLock = false
   private regenDelay = 0
   private jumpBuffer = 0
@@ -71,6 +79,7 @@ export class Player {
     this.jumpBuffer = 0
     this.coyote = 0
     this.cutApplied = true
+    this.climbing = null
   }
 
   get surface() {
@@ -117,6 +126,11 @@ export class Player {
       this.moveVel.multiplyScalar(1 - Math.min(1, dt * 8))
       return
     }
+    this.jumpBuffer = Math.max(0, this.jumpBuffer - dt)
+    if (this.climbing) {
+      this.climbUpdate(dt, input)
+      return
+    }
 
     const up = this.dir
     const right = this.heading.clone().cross(up).normalize()
@@ -149,10 +163,12 @@ export class Player {
     this.moveVel.lerp(target, 1 - Math.exp(-accel * dt))
     this.speedNorm = Math.min(1, this.moveVel.length() / PHYSICS.sprintSpeed)
 
+    const startRadius = this.surface + this.alt
     const distance = this.moveVel.length() * dt
     if (distance > 1e-6) {
       const tangent = this.moveVel.clone().normalize()
       const oldUp = this.dir.clone()
+      const oldHeading = this.heading.clone()
       const next = oldUp.clone().addScaledVector(tangent, distance / this.surface).normalize()
       const transport = new THREE.Quaternion().setFromUnitVectors(oldUp, next)
       this.heading.applyQuaternion(transport)
@@ -160,13 +176,31 @@ export class Player {
       this.heading.addScaledVector(this.dir, -this.heading.dot(this.dir))
       if (this.heading.lengthSq() < 0.001) this.heading.set(1, 0, 0).projectOnPlane(this.dir)
       this.heading.normalize()
+
+      // Walking keeps the feet at the same world height while the ground moves
+      // under them, which is what makes stepping off a pit rim a real fall.
+      const surf = surfaceRadius(this.dir)
+      if (this.grounded && surf - startRadius > distance * MAX_SLOPE + 0.06) {
+        // A wall of dirt: refuse the step instead of teleporting up it.
+        this.dir.copy(oldUp)
+        this.heading.copy(oldHeading)
+        this.moveVel.multiplyScalar(0.15)
+      } else {
+        this.alt = startRadius - surf
+      }
+    }
+
+    if (input.ladder && this.grounded && input.forward > 0.3) {
+      if (input.ladder.dir.angleTo(this.dir) * PHYSICS.radius < 1.5) {
+        this.attach(input.ladder)
+        return
+      }
     }
 
     // Crates, fence rails and barricades are standable: anything solid under
     // the feet becomes the floor, so the jump can get you on top of them.
     const floor = this.supportLevel()
 
-    this.jumpBuffer = Math.max(0, this.jumpBuffer - dt)
     if (this.jumpBuffer > 0 && (this.grounded || this.coyote > 0)) {
       this.jumpBuffer = 0
       this.coyote = 0
@@ -212,6 +246,57 @@ export class Player {
       this.bobPhase += dt * (6 + this.moveVel.length() * 0.75)
     } else if (!this.grounded) {
       this.bobPhase += dt * 2
+    }
+  }
+
+  private attach(ladder: Ladder) {
+    const feet = this.surface + this.alt
+    this.climbing = ladder
+    this.dir.copy(ladder.dir)
+    this.alt = THREE.MathUtils.clamp(feet - ladder.base, 0, ladder.top - ladder.base - 0.05)
+    this.velY = 0
+    this.grounded = true
+    this.moveVel.set(0, 0, 0)
+    this.moving = false
+    this.speedNorm = 0
+    this.heading.addScaledVector(this.dir, -this.heading.dot(this.dir))
+    if (this.heading.lengthSq() < 1e-6) this.heading.set(1, 0, 0).projectOnPlane(this.dir)
+    this.heading.normalize()
+  }
+
+  private climbUpdate(dt: number, input: MoveInput) {
+    const ladder = this.climbing
+    if (!ladder) return
+    const top = ladder.top - ladder.base
+    this.moveVel.set(0, 0, 0)
+    this.moving = false
+    this.speedNorm = 0
+    this.velY = 0
+
+    if (this.jumpBuffer > 0) {
+      // Let go and drop back down.
+      this.jumpBuffer = 0
+      this.climbing = null
+      this.grounded = false
+      this.velY = 2.4
+      return
+    }
+
+    this.dir.copy(ladder.dir)
+    this.alt += input.forward * CLIMB_SPEED * dt
+    if (this.alt >= top) {
+      // Step off onto the rim.
+      this.dir.copy(ladder.exitDir)
+      this.alt = 0
+      this.grounded = true
+      this.climbing = null
+      this.jumpedThisFrame = true
+      return
+    }
+    if (this.alt <= 0) {
+      this.alt = 0
+      this.grounded = true
+      this.climbing = null
     }
   }
 
