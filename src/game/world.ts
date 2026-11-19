@@ -4,6 +4,7 @@ import { COLORS, PHYSICS } from '../config'
 import { flagTexture, gradientMap, outlined, radialTexture, signTexture, softGradientMap, toon } from './toon'
 import { seeded, type Obstacle } from './props'
 import { buildCoverSet, type CoverAsset, type CoverKind } from './cover'
+import { buildHouseSet, lampPost, plaza, type HouseAsset } from './houses'
 import { ENEMY_SPAWNS, PAD_SPAWNS, SPAWN_LATLON } from './landmarks'
 
 const R = PHYSICS.radius
@@ -362,6 +363,143 @@ export class World {
       const placed: { dir: THREE.Vector3; radius: number }[] = []
       const normal = new THREE.Vector3()
 
+      // Deliberate cover near the landing site: real wall lines, crate stacks and columns.
+      // Everything is laid out in metres on the local tangent plane around the spawn.
+      const east = new THREE.Vector3().crossVectors(spawn, Y).normalize()
+      const north = new THREE.Vector3().crossVectors(east, spawn).normalize()
+      const at = (e: number, n: number) =>
+        spawn.clone().addScaledVector(east, e / R).addScaledVector(north, n / R).normalize()
+
+      const attach = (
+        asset: CoverAsset,
+        kind: CoverKind | 'house',
+        dir: THREE.Vector3,
+        scale: number,
+        along?: THREE.Vector3,
+        longAxis: 'x' | 'z' = 'z',
+        lift = 0,
+        collide = true,
+      ) => {
+        const outer = new THREE.Group()
+        outer.position.copy(dir).multiplyScalar(surfaceRadius(dir))
+        const up = surfaceNormal(dir, new THREE.Vector3())
+        const forward = (along ?? east).clone().projectOnPlane(up)
+        if (forward.lengthSq() < 1e-5) forward.copy(north)
+        forward.normalize()
+        if (longAxis === 'z') {
+          const side = new THREE.Vector3().crossVectors(up, forward).normalize()
+          outer.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(side, up, forward))
+        } else {
+          const side = new THREE.Vector3().crossVectors(forward, up).normalize()
+          outer.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(forward, up, side))
+        }
+        const model = asset.scene.clone(true)
+        model.scale.setScalar(scale)
+        model.position.y += lift - 0.03 - bedding(up, dir, asset.footprint * scale)
+        outer.add(model)
+        group.add(outer)
+        if (!collide) return outer
+        this.solids.push(outer)
+
+        const height = asset.height * scale * 0.9
+        if (kind === 'wall' || kind === 'barricade') {
+          // Long thin walls get three circles so you cannot walk through the ends.
+          const half = asset.footprint * scale * 0.85
+          const axis = (longAxis === 'z' ? forward : forward).clone()
+          for (const k of [-1, 0, 1]) {
+            const a = (k * half) / R
+            const cdir = dir.clone().multiplyScalar(Math.cos(a)).addScaledVector(axis, Math.sin(a)).normalize()
+            this.obstacles.push({ dir: cdir, radius: 0.5, height })
+          }
+        } else {
+          this.obstacles.push({ dir: dir.clone(), radius: asset.footprint * scale * 0.9 + 0.12, height })
+        }
+        return outer
+      }
+
+      // ---- village + farm houses ------------------------------------------
+      const houses = buildHouseSet(rng)
+      const clearOf = (dir: THREE.Vector3, radius: number) =>
+        !pads.some((pad) => dir.angleTo(pad) * R < 9 + radius) &&
+        !enemies.some((e) => dir.angleTo(e) * R < 5 + radius)
+
+      const facingCentre = (dir: THREE.Vector3, centre: THREE.Vector3, up: THREE.Vector3) => {
+        const out = centre.clone().multiplyScalar(R).sub(dir.clone().multiplyScalar(R))
+        out.projectOnPlane(up)
+        return out.lengthSq() > 1e-4 ? out.normalize() : east.clone()
+      }
+
+      const centre = at(31, -2)
+      const centreUp = surfaceNormal(centre, new THREE.Vector3())
+
+      // the little cobbled square, laid flat on the surface at its centre
+      const squareAsset = plaza(rng, 3.7)
+      const squareOuter = new THREE.Group()
+      squareOuter.position.copy(centre).multiplyScalar(surfaceRadius(centre))
+      squareOuter.quaternion.setFromUnitVectors(Y, centreUp)
+      const squareModel = squareAsset.scene.clone(true)
+      squareModel.position.y += 0.01
+      squareOuter.add(squareModel)
+      squareOuter.name = 'plaza'
+      group.add(squareOuter)
+
+      const lamp = attach(lampPost(), 'house', centre, 1, east, 'z', 0, true)
+      lamp.name = 'lamp'
+
+      // ring of houses around the square, doors facing in
+      const ring: [number, number, number][] = [
+        [14.6, 205, 1],
+        [15.4, 250, 2],
+        [14.4, 300, 0],
+        [15.6, 345, 3],
+        [14.8, 40, 5],
+        [15.8, 95, 4],
+      ]
+      const houseScale = 1.08
+      ring.forEach(([dist, deg, variant], i) => {
+        const a = (deg * Math.PI) / 180
+        const dir = centre
+          .clone()
+          .multiplyScalar(Math.cos(dist / R))
+          .addScaledVector(east, Math.sin(dist / R) * Math.cos(a))
+          .addScaledVector(north, Math.sin(dist / R) * Math.sin(a))
+          .normalize()
+        const asset = houses[variant % houses.length]
+        const radius = asset.footprint * houseScale + 1.6
+        if (!clearOf(dir, radius)) return
+        if (placed.some((p) => dir.angleTo(p.dir) * R < p.radius + radius + 0.8)) return
+        const up = surfaceNormal(dir, new THREE.Vector3())
+        attach(asset, 'house', dir, houseScale, facingCentre(dir, centre, up), 'z').name = 'house'
+        placed.push({ dir: dir.clone(), radius })
+      })
+
+      // a couple of outlying cottages + farms so the planet is not empty
+      const scattered: [number, number, number][] = [
+        [18, -74, 1],
+        [58, -22, 0],
+        [-34, -64, 3],
+        [-52, 24, 2],
+        [12, 62, 5],
+        [72, 44, 6],
+        [-14, 108, 4],
+      ]
+      for (const [lat, lon, variant] of scattered) {
+        const dir = dirFromLatLon(lat, lon)
+        const asset = houses[variant % houses.length]
+        const radius = asset.footprint * 1.1 + 1.6
+        if (!clearOf(dir, radius)) continue
+        const up = surfaceNormal(dir, new THREE.Vector3())
+        const face = new THREE.Vector3().crossVectors(dir, Y).normalize()
+        attach(asset, 'house', dir, 1.1, face, 'z').name = 'house'
+        placed.push({ dir: dir.clone(), radius })
+        if (rng() < 0.7) {
+          const off = face.clone().multiplyScalar((radius + 4) / R)
+          const barn = dir.clone().multiplyScalar(Math.cos(off.length())).addScaledVector(off.clone().normalize(), Math.sin(off.length())).normalize()
+          if (clearOf(barn, 3)) attach(houses[6 + (variant % 3)], 'house', barn, 0.9, face, 'z').name = 'house'
+        }
+      }
+
+
       const kinds: [CoverKind, number, number, number][] = [
         ['tree', 26, 0.9, 1.4],
         ['rock', 34, 1.0, 1.7],
@@ -430,58 +568,6 @@ export class World {
         ['bush', 3, 0.8, 1.1],
       ]
       for (const [kind, count, minScale, maxScale] of nearRing) place(kind, count, minScale, maxScale, true)
-
-      // Deliberate cover near the landing site: real wall lines, crate stacks and columns.
-      // Everything is laid out in metres on the local tangent plane around the spawn.
-      const east = new THREE.Vector3().crossVectors(spawn, Y).normalize()
-      const north = new THREE.Vector3().crossVectors(east, spawn).normalize()
-      const at = (e: number, n: number) =>
-        spawn.clone().addScaledVector(east, e / R).addScaledVector(north, n / R).normalize()
-
-      const attach = (
-        asset: CoverAsset,
-        kind: CoverKind,
-        dir: THREE.Vector3,
-        scale: number,
-        along?: THREE.Vector3,
-        longAxis: 'x' | 'z' = 'z',
-        lift = 0,
-      ) => {
-        const outer = new THREE.Group()
-        outer.position.copy(dir).multiplyScalar(surfaceRadius(dir))
-        const up = surfaceNormal(dir, new THREE.Vector3())
-        const forward = (along ?? east).clone().projectOnPlane(up)
-        if (forward.lengthSq() < 1e-5) forward.copy(north)
-        forward.normalize()
-        if (longAxis === 'z') {
-          const side = new THREE.Vector3().crossVectors(up, forward).normalize()
-          outer.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(side, up, forward))
-        } else {
-          const side = new THREE.Vector3().crossVectors(forward, up).normalize()
-          outer.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(forward, up, side))
-        }
-        const model = asset.scene.clone(true)
-        model.scale.setScalar(scale)
-        model.position.y += lift - 0.03 - bedding(up, dir, asset.footprint * scale)
-        outer.add(model)
-        group.add(outer)
-        this.solids.push(outer)
-
-        const height = asset.height * scale * 0.9
-        if (kind === 'wall' || kind === 'barricade') {
-          // Long thin walls get three circles so you cannot walk through the ends.
-          const half = asset.footprint * scale * 0.85
-          const axis = (longAxis === 'z' ? forward : forward).clone()
-          for (const k of [-1, 0, 1]) {
-            const a = (k * half) / R
-            const cdir = dir.clone().multiplyScalar(Math.cos(a)).addScaledVector(axis, Math.sin(a)).normalize()
-            this.obstacles.push({ dir: cdir, radius: 0.5, height })
-          }
-        } else {
-          this.obstacles.push({ dir: dir.clone(), radius: asset.footprint * scale * 0.9 + 0.12, height })
-        }
-        return outer
-      }
 
       const wallLine = (e0: number, n0: number, e1: number, n1: number, scale: number) => {
         const wallAssets = assets.get('wall') ?? []
