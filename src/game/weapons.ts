@@ -34,9 +34,9 @@ type Model = {
 /** Rest pose for each tool kind: tools are held, not aimed. */
 const TOOL_POSE: Record<string, { rx: number; ry: number; dx: number; dy: number; dz: number }> = {
   // Blade angled up off the fist, tip past the crosshair line.
-  melee: { rx: -0.12, ry: 0.02, dx: 0.0, dy: 0.03, dz: 0.02 },
-  // Blade low and forward, handle rising back toward the shoulder.
-  shovel: { rx: 0.55, ry: 0.18, dx: 0.0, dy: 0.06, dz: -0.02 },
+  melee: { rx: -0.04, ry: 0.42, dx: 0.0, dy: 0.03, dz: 0.02 },
+  // Blade tipped down at the grass, handle rising back toward the shoulder.
+  shovel: { rx: -0.42, ry: 0.16, dx: 0.0, dy: 0.02, dz: -0.02 },
   // Rungs stand up in front of the body.
   ladder: { rx: -0.85, ry: 0.12, dx: 0.02, dy: 0.09, dz: -0.03 },
 }
@@ -309,15 +309,18 @@ export class WeaponSystem {
         addPart(new THREE.CylinderGeometry(0.021, 0.024, 0.15, 12), plum, new THREE.Vector3(0, 0, 0.02), _alongZ.clone())
         addPart(new THREE.SphereGeometry(0.026, 12, 10), candy, new THREE.Vector3(0, 0, 0.1))
         addPart(new THREE.BoxGeometry(0.074, 0.019, 0.022), gold, new THREE.Vector3(0, 0.004, -0.06))
-        addPart(new THREE.BoxGeometry(0.044, 0.015, 0.2), steel, new THREE.Vector3(0, 0.007, -0.17))
+        // Chunky toy blade: wide enough to catch light and cast its own outline,
+        // with a blunt clipped tip so it never reads as a real weapon.
+        addPart(new THREE.BoxGeometry(0.068, 0.022, 0.17), steel, new THREE.Vector3(0, 0.008, -0.16))
         addPart(
-          new THREE.ConeGeometry(0.031, 0.085, 4),
+          new THREE.ConeGeometry(0.04, 0.075, 4),
           steel,
-          new THREE.Vector3(0, 0.007, -0.31),
+          new THREE.Vector3(0, 0.008, -0.28),
           new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, Math.PI / 4)),
-          new THREE.Vector3(0.72, 1, 0.3),
+          new THREE.Vector3(0.9, 1, 0.34),
         )
-        addPart(new THREE.BoxGeometry(0.007, 0.018, 0.2), toon(COLORS.white), new THREE.Vector3(0, 0.014, -0.17))
+        addPart(new THREE.BoxGeometry(0.072, 0.026, 0.022), gold, new THREE.Vector3(0, 0.008, -0.075))
+        addPart(new THREE.BoxGeometry(0.012, 0.026, 0.17), toon(COLORS.white), new THREE.Vector3(0, 0.018, -0.16))
         mats.push(toon(COLORS.white))
         muzzle.set(0, 0.007, -0.34)
         addHand(
@@ -329,29 +332,34 @@ export class WeaponSystem {
       } else if (weapon.kind === 'shovel') {
         // A garden trowel, not a full spade: short shaft keeps the mint blade
         // right above the fist where it actually reads in first person.
-        addPart(new THREE.CylinderGeometry(0.015, 0.017, 0.24, 10), wood, new THREE.Vector3(0, 0, -0.03), _alongZ.clone())
-        addPart(new THREE.TorusGeometry(0.04, 0.012, 8, 18), woodDeep, new THREE.Vector3(0, 0, 0.1))
-        addPart(new THREE.BoxGeometry(0.155, 0.02, 0.18), blade, new THREE.Vector3(0, -0.006, -0.23))
+        addPart(new THREE.CylinderGeometry(0.015, 0.017, 0.26, 10), wood, new THREE.Vector3(0, 0, -0.02), _alongZ.clone())
+        // Half-hoop D-grip on the butt end, opening forward: a ring reads as a
+        // floating donut, a D reads as a grip.
         addPart(
-          new THREE.SphereGeometry(0.066, 16, 10),
-          blade,
-          new THREE.Vector3(0, -0.006, -0.32),
-          undefined,
-          new THREE.Vector3(0.98, 0.26, 0.7),
+          new THREE.TorusGeometry(0.033, 0.009, 8, 16, Math.PI),
+          woodDeep,
+          new THREE.Vector3(0, 0, 0.115),
+          new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2),
         )
-        addPart(new THREE.BoxGeometry(0.14, 0.026, 0.026), woodDeep, new THREE.Vector3(0, -0.006, -0.15))
-        muzzle.set(0, -0.006, -0.35)
+        addPart(new THREE.BoxGeometry(0.012, 0.012, 0.028), woodDeep, new THREE.Vector3(0, 0, 0.148))
+        // Paddle: a wide box plus a rounded nose, thick enough to read as a
+        // blade from above instead of an edge-on sliver.
+        addPart(new THREE.BoxGeometry(0.2, 0.028, 0.2), blade, new THREE.Vector3(0, -0.006, -0.25))
+        addPart(
+          new THREE.SphereGeometry(0.1, 16, 10),
+          blade,
+          new THREE.Vector3(0, -0.006, -0.35),
+          undefined,
+          new THREE.Vector3(1, 0.28, 0.62),
+        )
+        addPart(new THREE.BoxGeometry(0.17, 0.032, 0.03), woodDeep, new THREE.Vector3(0, -0.006, -0.15))
+        muzzle.set(0, -0.006, -0.39)
+        // One hand: it is a trowel, not a spade.
         addHand(
           new THREE.Vector3(0.0, -0.062, 0.05),
           false,
           new THREE.Vector3(0.14, -0.17, 0.05),
           new THREE.Vector3(0.22, -0.48, 0.3),
-        )
-        addHand(
-          new THREE.Vector3(0.012, -0.058, -0.09),
-          true,
-          new THREE.Vector3(-0.13, -0.17, -0.06),
-          new THREE.Vector3(-0.24, -0.46, 0.06),
         )
       } else {
         for (const side of [-1, 1]) {
