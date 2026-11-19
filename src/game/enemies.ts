@@ -69,12 +69,24 @@ const _dir = new THREE.Vector3()
 const BAR_LOW = new THREE.Color(COLORS.candy)
 const BAR_HIGH = new THREE.Color(COLORS.mint)
 
-/** Small planets hide things behind the horizon — enemies may not shoot through it. */
+const _losN = new THREE.Vector3()
+
+/**
+ * Small planets hide things behind the horizon — enemies may not shoot through
+ * the ground, a dug pit included. A single closest-point test is not enough:
+ * a pit wall sits *beside* the straight line, so the whole segment is sampled.
+ */
 export function hasLineOfSight(a: THREE.Vector3, b: THREE.Vector3) {
   _ab.copy(b).sub(a)
-  const t = THREE.MathUtils.clamp(-a.dot(_ab) / Math.max(1e-6, _ab.lengthSq()), 0, 1)
-  _closest.copy(a).addScaledVector(_ab, t)
-  return _closest.length() > surfaceRadius(_closest) + 0.5
+  const len = _ab.length()
+  if (len < 0.001) return true
+  const steps = Math.max(4, Math.min(24, Math.round(len / 1.3)))
+  for (let i = 1; i < steps; i++) {
+    _closest.copy(a).addScaledVector(_ab, i / steps)
+    const r = _closest.length()
+    if (r < surfaceRadius(_losN.copy(_closest).divideScalar(r)) + 0.12) return false
+  }
+  return true
 }
 
 export class EnemyManager {

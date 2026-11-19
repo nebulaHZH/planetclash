@@ -93,10 +93,34 @@ export function digDrop(dir: THREE.Vector3): number {
   return drop
 }
 
+/**
+ * Soil thrown out of the pit. Digging is not subtractive on its own: every
+ * shovelful has to go somewhere, so the spoil piles up in a ring just outside
+ * the rim. Tallest allowed is capped, because the mound is decoration — the
+ * pit is the part that matters for gameplay.
+ */
+const MOUND_MAX = 1.15
+export function digMound(dir: THREE.Vector3): number {
+  let rise = 0
+  for (const hole of DIGS) {
+    const dot = THREE.MathUtils.clamp(dir.dot(hole.dir), -1, 1)
+    if (dot < 0.2) continue
+    const k = (Math.acos(dot) * R) / Math.max(0.5, hole.radius)
+    if (k < 0.84 || k > 2.05) continue
+    // Starts inside the lip so the spoil covers it, crests at 1.35, and is back
+    // down to grass by 2.3.
+    const up = smoothstep((k - 0.84) / 0.26)
+    const down = 1 - smoothstep((k - 1.3) / 0.75)
+    const h = up * down * Math.min(MOUND_MAX, hole.depth * 0.17)
+    if (h > rise) rise = h
+  }
+  return rise
+}
+
 /** Analytic walking surface — the same function used to displace the mesh. */
 export function surfaceRadius(dir: THREE.Vector3): number {
   const base = plainRadius(dir)
-  return DIGS.length === 0 ? base : base - digDrop(dir)
+  return DIGS.length === 0 ? base : base - digDrop(dir) + digMound(dir)
 }
 
 /**
@@ -709,7 +733,9 @@ export class World {
   private buildPitMesh(hole: DigHole, lift: number) {
     const rings = 30
     const segs = 56
-    const outer = Math.min(R * 0.5, hole.radius * 1.45 + 0.8)
+    // Must reach past the spoil ring, or the mound's outer skirt is drawn by the
+    // coarse shell and cuts a hard circle into the grass.
+    const outer = Math.min(R * 0.5, hole.radius * 2.1 + 0.15)
     const inner = hole.radius * 0.5
     const rim = hole.radius
     const up = hole.dir
@@ -718,9 +744,9 @@ export class World {
     // Rings: a few across the flat floor, most of them down the wall, a few on
     // the apron that hides the shell's coarse chord.
     const arcAt = (t: number) => {
-      if (t < 0.14) return (t / 0.14) * inner
-      if (t < 0.74) return inner + ((t - 0.14) / 0.6) * (rim - inner)
-      return rim + ((t - 0.74) / 0.26) * (outer - rim)
+      if (t < 0.12) return (t / 0.12) * inner
+      if (t < 0.58) return inner + ((t - 0.12) / 0.46) * (rim - inner)
+      return rim + ((t - 0.58) / 0.42) * (outer - rim)
     }
     const count = (rings + 1) * segs
     const pos = new Float32Array(count * 3)
@@ -756,8 +782,11 @@ export class World {
         nrm[k + 1] = _vA.y
         nrm[k + 2] = _vA.z
         const drop = digDrop(dir)
+        // Spoil is soil too, so the mound darkens by its own height, not by the
+        // depth of the hole it came out of.
+        const dirt = Math.max(drop / 0.4, smoothstep(digMound(dir) / 0.3))
         zoneColor(dir, _col)
-        _col.lerp(SOIL, Math.min(1, drop / 0.55))
+        _col.lerp(SOIL, Math.min(1, dirt))
         _col.lerp(SOIL_DEEP, THREE.MathUtils.clamp(drop / (DIG_MAX * 1.4), 0, 0.55))
         col[k] = _col.r
         col[k + 1] = _col.g
