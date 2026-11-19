@@ -28,8 +28,10 @@ const _vA = new THREE.Vector3()
 const _vB = new THREE.Vector3()
 const _vC = new THREE.Vector3()
 const _vD = new THREE.Vector3()
-const SOIL = new THREE.Color('#B07C55')
-const SOIL_DEEP = new THREE.Color('#7C5138')
+const SOIL_TOP = new THREE.Color('#8A5F3C')
+const SOIL_LOAM = new THREE.Color('#C09055')
+const SOIL_CLAY = new THREE.Color('#9A6238')
+const SOIL_CORE = new THREE.Color('#6E4A44')
 
 export function dirFromLatLon(latDeg: number, lonDeg: number): THREE.Vector3 {
   const lat = (latDeg * Math.PI) / 180
@@ -1195,9 +1197,15 @@ export class World {
       _vD.copy(_vC).divideScalar(len)
       const plain = plainRadius(_vD)
       const below = plain - len
+      // Soil strata: four depth bands with wobbly edges — a gradient never
+      // reads as "underground", stripes do.
+      const j = Math.sin(_vC.x * 12.9898 + _vC.y * 78.233 + _vC.z * 37.719) * 43758.5453
+      const d = below + (j - Math.floor(j) - 0.5) * 0.5
       zoneColor(_vD, _col)
-      _col.lerp(SOIL, Math.min(1, smoothstep(below / 0.24)))
-      _col.lerp(SOIL_DEEP, THREE.MathUtils.clamp(below / (DIG_MAX * 1.3), 0, 0.55))
+      _col.lerp(SOIL_TOP, smoothstep(d / 0.5))
+      _col.lerp(SOIL_LOAM, smoothstep((d - 0.7) / 0.35))
+      _col.lerp(SOIL_CLAY, smoothstep((d - 2.2) / 0.35))
+      _col.lerp(SOIL_CORE, smoothstep((d - 4.3) / 0.35))
       col[i * 3] = _col.r
       col[i * 3 + 1] = _col.g
       col[i * 3 + 2] = _col.b

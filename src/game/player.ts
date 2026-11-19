@@ -365,14 +365,19 @@ export class Player {
       const radial = _push.dot(this.dir)
       if (radial > 0) this.alt += Math.min(radial, 0.2)
       _push.addScaledVector(this.dir, -radial)
-      if (_push.lengthSq() > 1e-8) {
-        this.dir.addScaledVector(_push, 1 / Math.max(4, this.surface + this.alt)).normalize()
+      const l = _push.length()
+      if (l > 1e-6) {
+        // stop pressing into the wall, then step back out — no re-entry flicker
+        _away.copy(_push).divideScalar(l)
+        const into = this.moveVel.dot(_away)
+        if (into < 0) this.moveVel.addScaledVector(_away, -into)
+        this.dir.addScaledVector(_away, Math.min(l, 0.3) / Math.max(4, this.surface + this.alt)).normalize()
         this.heading.addScaledVector(this.dir, -this.heading.dot(this.dir))
         if (this.heading.lengthSq() < 1e-6) this.heading.set(1, 0, 0).projectOnPlane(this.dir)
         this.heading.normalize()
       }
     }
     _head.copy(this.dir).multiplyScalar(r + PHYSICS.eyeHeight - this.duck)
-    if (isDirt(_head)) this.duck = Math.min(0.9, this.duck + dt * 3.5)
+    if (isDirt(_head)) this.duck = Math.min(0.9, this.duck + dt * 5.5)
   }
 }
