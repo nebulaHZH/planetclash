@@ -1,7 +1,9 @@
 import * as THREE from 'three'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { COLORS, PHYSICS } from '../config'
 import { flagTexture, gradientMap, outlined, radialTexture, signTexture, toon } from './toon'
-import { loadPropAssets, seeded, type Obstacle, type PropAsset, type PropKind } from './props'
+import { seeded, type Obstacle } from './props'
+import { buildCoverSet, type CoverAsset, type CoverKind } from './cover'
 import { ENEMY_SPAWNS, PAD_SPAWNS, SPAWN_LATLON } from './landmarks'
 
 const R = PHYSICS.radius
@@ -20,10 +22,11 @@ export function dirFromLatLon(latDeg: number, lonDeg: number): THREE.Vector3 {
 export function surfaceRadius(dir: THREE.Vector3): number {
   _n.copy(dir).normalize()
   const n =
-    Math.sin(_n.x * 11 + _n.z * 6.5) * 1.95 +
-    Math.sin(_n.y * 17 + _n.x * 4) * 1.18 +
-    Math.sin((_n.x + _n.y + _n.z) * 31) * 0.34 +
-    Math.sin(_n.z * 7 - _n.y * 5) * 0.92
+    Math.sin(_n.x * 8 + _n.z * 5.2) * 3.0 +
+    Math.sin(_n.y * 11 + _n.x * 3.4) * 1.5 +
+    Math.sin((_n.x + _n.z) * 19 + _n.y * 7) * 0.62 +
+    Math.sin((_n.x + _n.y + _n.z) * 38) * 0.2 +
+    Math.sin(_n.z * 61 - _n.y * 43) * 0.07
   return R + 3.4 + n
 }
 
@@ -43,32 +46,110 @@ export function surfaceNormal(dir: THREE.Vector3, out: THREE.Vector3): THREE.Vec
   return out
 }
 
+// Pastel by design: the toon ramp already multiplies these down, so saturated
+// hues read as neon soup on the far side of the planet.
 const MEADOW = new THREE.Color('#8FE4C2')
-const ICE = new THREE.Color('#BCE8FF')
-const SAND = new THREE.Color('#FFE2A8')
-const JELLY = new THREE.Color('#F2ACE0')
+const ICE = new THREE.Color('#D6EEFF')
+const SAND = new THREE.Color('#FFEBC2')
+const JELLY = new THREE.Color('#F5CBE8')
+const CREAM = new THREE.Color('#FFF3DC')
+
+/** Biomes are round seas, not latitude bands — bands made it look like a gas giant. */
+type Sea = { dir: THREE.Vector3; color: THREE.Color; radius: number; weight: number; sign: 1 | -1 }
+const SEAS: Sea[] = [
+  { dir: dirFromLatLon(-18, 104), color: JELLY, radius: 0.78, weight: 0.9, sign: -1 },
+  { dir: dirFromLatLon(26, -132), color: JELLY, radius: 0.62, weight: 0.8, sign: -1 },
+  { dir: dirFromLatLon(-34, -46), color: SAND, radius: 0.86, weight: 0.85, sign: -1 },
+  { dir: dirFromLatLon(18, 34), color: SAND, radius: 0.6, weight: 0.7, sign: -1 },
+  { dir: dirFromLatLon(-6, 176), color: CREAM, radius: 0.55, weight: 0.6, sign: -1 },
+]
+
+/**
+ * How deep to bed a prop so a tilted base does not hang in the air on a slope.
+ * Uses less than the full downhill drop so the uphill edge stays visible.
+ */
+export function bedding(up: THREE.Vector3, dir: THREE.Vector3, footprint: number): number {
+  const tilt = Math.acos(THREE.MathUtils.clamp(up.dot(dir), -1, 1))
+  return Math.min(footprint * Math.tan(Math.min(tilt, 0.62)) * 0.55, footprint * 0.9)
+}
 
 const smooth = (t: number) => {
   const x = THREE.MathUtils.clamp(t, 0, 1)
   return x * x * (3 - 2 * x)
 }
 
+const _hslA = { h: 0, s: 0, l: 0 }
+const _hslB = { h: 0, s: 0, l: 0 }
+const _mix = new THREE.Color()
+
+/**
+ * Blend two colours in HSL while choosing which way around the hue wheel to
+ * travel. `THREE.Color.lerpHSL` always takes the shortest arc, which for
+ * mint -> pink dives through cyan and blue and turns the whole meadow navy.
+ * Candy biomes read much better taking the long, warm way round.
+ */
+function blendHue(a: THREE.Color, b: THREE.Color, t: number, dir: 1 | -1, out: THREE.Color) {
+  if (t <= 0) return out.copy(a)
+  if (t >= 1) return out.copy(b)
+  a.getHSL(_hslA, THREE.SRGBColorSpace)
+  b.getHSL(_hslB, THREE.SRGBColorSpace)
+  let d = _hslB.h - _hslA.h
+  if (dir > 0) {
+    while (d < 0) d += 1
+    while (d > 1) d -= 1
+  } else {
+    while (d > 0) d -= 1
+    while (d < -1) d += 1
+  }
+  const h = ((_hslA.h + d * t) % 1 + 1) % 1
+  return out.setHSL(h, _hslA.s + (_hslB.s - _hslA.s) * t, _hslA.l + (_hslB.l - _hslA.l) * t, THREE.SRGBColorSpace)
+}
+
 function zoneColor(dir: THREE.Vector3, out: THREE.Color) {
   const lat = Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1))
   const lon = Math.atan2(dir.z, dir.x)
-  const n =
-    Math.sin(lon * 2.3 + lat * 3.7) * 0.5 +
-    Math.sin(lon * 4.1 - lat * 2.3) * 0.28 +
-    Math.sin(lat * 6.1) * 0.22
-  const wIce = smooth((lat - 0.3) / 0.45) * (0.9 + n * 0.1)
-  const wSand = smooth((-lat - 0.22) / 0.45) * (0.9 - n * 0.1)
-  const wJelly = smooth((Math.cos(lon - 0.55) - 0.02) / 0.62) * smooth((0.62 - lat) / 0.6)
+  // Wobble every biome edge so the seas look painted on, not stencilled.
+  const wob =
+    Math.sin(lon * 3.1 + lat * 4.7) * 0.5 +
+    Math.sin(lon * 6.3 - lat * 3.9) * 0.3 +
+    Math.sin(lat * 9.7) * 0.2
+  const relief = surfaceRadius(dir) - (R + 3.4)
+
   out.copy(MEADOW)
-  // HSL blending keeps the candy palette saturated where two biomes meet.
-  out.lerpHSL(JELLY, THREE.MathUtils.clamp(wJelly, 0, 1))
-  out.lerpHSL(SAND, THREE.MathUtils.clamp(wSand, 0, 1) * 0.94)
-  out.lerpHSL(ICE, THREE.MathUtils.clamp(wIce, 0, 1))
-  out.offsetHSL(0, 0.06, n * 0.03)
+  for (const sea of SEAS) {
+    const ang = Math.acos(THREE.MathUtils.clamp(dir.dot(sea.dir), -1, 1))
+    const w = smooth((sea.radius + wob * 0.14 - ang) / 0.34) * sea.weight
+    if (w <= 0.001) continue
+    blendHue(out, sea.color, w, sea.sign, _mix)
+    out.copy(_mix)
+  }
+
+  // Snow: polar caps plus anything high enough to be a hilltop.
+  const polar = smooth((Math.abs(lat) - 0.58) / 0.3)
+  const peaks = smooth((relief - 3.2) / 2.2)
+  const snow = Math.max(polar * 0.8, peaks * 0.9)
+  if (snow > 0.002) {
+    blendHue(out, ICE, snow, 1, _mix)
+    out.copy(_mix)
+    out.offsetHSL(0, -snow * 0.25, snow * 0.04)
+  }
+
+  // Basins pick up a sandy tint so hollows read as hollows.
+  const basin = smooth((-relief - 3.4) / 2.2) * 0.4
+  if (basin > 0.002) {
+    blendHue(out, SAND, basin, -1, _mix)
+    out.copy(_mix)
+  }
+
+  const blotch = Math.sin(lon * 9.5 + lat * 12.3) * Math.cos(lat * 8.5 - lon * 5.1)
+  // A second, ~15 m band gives the ground a hand-painted patchwork instead of
+  // one continuous wash at walking distance.
+  const patch = Math.sin(lon * 26 + lat * 31) * Math.cos(lat * 23 - lon * 17)
+  out.offsetHSL(
+    blotch * 0.02 + patch * 0.016,
+    0.02 + blotch * 0.07 + patch * 0.05,
+    relief * 0.016 + blotch * 0.022 + patch * 0.02,
+  )
 }
 
 export type CapturePad = {
@@ -138,8 +219,8 @@ export class World {
   loadProps() {
     if (this.propLoad) return this.propLoad
     this.propLoad = (async () => {
-      const assets = await loadPropAssets()
       const rng = seeded(20260601)
+      const assets = buildCoverSet(rng)
       const spawn = dirFromLatLon(SPAWN_LATLON[0], SPAWN_LATLON[1])
       const pads = PAD_SPAWNS.map(([lat, lon]) => dirFromLatLon(lat, lon))
       const enemies = ENEMY_SPAWNS.map(([lat, lon]) => dirFromLatLon(lat, lon))
@@ -150,19 +231,19 @@ export class World {
       const placed: { dir: THREE.Vector3; radius: number }[] = []
       const normal = new THREE.Vector3()
 
-      const kinds: [PropKind, number, number, number][] = [
-        ['tree', 26, 1.6, 2.4],
-        ['rock', 34, 1.4, 2.3],
-        ['block', 14, 1.8, 2.4],
-        ['wall', 18, 2.0, 2.6],
-        ['column', 10, 2.2, 2.7],
-        ['barricade', 14, 1.8, 2.2],
-        ['bush', 24, 1.5, 2.4],
+      const kinds: [CoverKind, number, number, number][] = [
+        ['tree', 26, 0.9, 1.4],
+        ['rock', 34, 1.0, 1.7],
+        ['block', 12, 0.9, 1.3],
+        ['wall', 16, 1.1, 1.5],
+        ['column', 8, 0.9, 1.3],
+        ['barricade', 14, 1.0, 1.4],
+        ['bush', 24, 0.8, 1.3],
       ]
 
-      for (const [kind, count, minScale, maxScale] of kinds) {
+      const place = (kind: CoverKind, count: number, minScale: number, maxScale: number, near: boolean) => {
         const list = assets.get(kind) ?? []
-        if (list.length === 0) continue
+        if (list.length === 0) return
         for (let i = 0; i < count; i++) {
           let dir = new THREE.Vector3()
           let asset = list[0]
@@ -171,7 +252,7 @@ export class World {
           let ok = false
           for (let attempt = 0; attempt < 48 && !ok; attempt++) {
             const angle = rng() * Math.PI * 2
-            const distance = 0.03 + 0.56 * Math.sqrt(rng())
+            const distance = near ? 0.08 + 0.11 * Math.sqrt(rng()) : 0.03 + 0.56 * Math.sqrt(rng())
             dir.copy(spawn).multiplyScalar(Math.cos(distance))
               .addScaledVector(t1, Math.cos(angle) * Math.sin(distance))
               .addScaledVector(t2, Math.sin(angle) * Math.sin(distance))
@@ -194,7 +275,7 @@ export class World {
           const model = asset.scene.clone(true)
           model.scale.setScalar(scale)
           model.rotation.y = rng() * Math.PI * 2
-          model.position.y -= 0.05
+          model.position.y -= 0.05 + bedding(normal, dir, asset.footprint * scale)
           outer.add(model)
           group.add(outer)
           placed.push({ dir: dir.clone(), radius })
@@ -205,6 +286,20 @@ export class World {
         }
       }
 
+      for (const [kind, count, minScale, maxScale] of kinds) place(kind, count, minScale, maxScale, false)
+      // A tighter ring around the landing site: without it the opening shot is a
+      // bare field because the wide scatter biases towards the far planet.
+      const nearRing: [CoverKind, number, number, number][] = [
+        ['tree', 2, 0.85, 1.15],
+        ['rock', 3, 0.9, 1.4],
+        ['block', 2, 0.85, 1.1],
+        ['wall', 2, 1.0, 1.2],
+        ['column', 1, 0.85, 1.0],
+        ['barricade', 2, 0.95, 1.2],
+        ['bush', 3, 0.8, 1.1],
+      ]
+      for (const [kind, count, minScale, maxScale] of nearRing) place(kind, count, minScale, maxScale, true)
+
       // Deliberate cover near the landing site: real wall lines, crate stacks and columns.
       // Everything is laid out in metres on the local tangent plane around the spawn.
       const east = new THREE.Vector3().crossVectors(spawn, Y).normalize()
@@ -213,8 +308,8 @@ export class World {
         spawn.clone().addScaledVector(east, e / R).addScaledVector(north, n / R).normalize()
 
       const attach = (
-        asset: PropAsset,
-        kind: PropKind,
+        asset: CoverAsset,
+        kind: CoverKind,
         dir: THREE.Vector3,
         scale: number,
         along?: THREE.Vector3,
@@ -236,7 +331,7 @@ export class World {
         }
         const model = asset.scene.clone(true)
         model.scale.setScalar(scale)
-        model.position.y += lift - 0.03
+        model.position.y += lift - 0.03 - bedding(up, dir, asset.footprint * scale)
         outer.add(model)
         group.add(outer)
         this.solids.push(outer)
@@ -265,7 +360,7 @@ export class World {
         const b = at(e1, n1)
         const along = new THREE.Vector3().subVectors(b, a).normalize()
         const length = Math.hypot(e1 - e0, n1 - n0)
-        const count = Math.max(1, Math.round(length / (scale * 0.98)))
+        const count = Math.max(1, Math.round(length / (asset.footprint * 2 * scale * 0.9)))
         for (let i = 0; i < count; i++) {
           const t = (i + 0.5) / count
           attach(asset, 'wall', at(e0 + (e1 - e0) * t, n0 + (n1 - n0) * t), scale, along, 'x')
@@ -273,26 +368,26 @@ export class World {
       }
 
       // Two chunky wall lines screen the landing site without blocking the arch view.
-      wallLine(13, -18, 13, -2, 2.1)
-      wallLine(-13, -13, -13, 5, 2.1)
-      wallLine(-4, 21, 9, 21, 2.1)
+      wallLine(13, -18, 13, -2, 1.25)
+      wallLine(-13, -13, -13, 5, 1.25)
+      wallLine(-4, 21, 9, 21, 1.25)
 
       // Crate stacks to hop on and shoot over.
       const blocks = assets.get('block') ?? []
       if (blocks.length) {
-        attach(blocks[0], 'block', at(7.5, 3.5), 1.6)
-        attach(blocks[0], 'block', at(7.4, 5.1), 1.3)
-        attach(blocks[0], 'block', at(7.6, 4.3), 1.3, undefined, 'z', 0.66)
-        attach(blocks[1] ?? blocks[0], 'block', at(-7, 10), 1.5)
-        attach(blocks[0], 'block', at(-7.9, 11.2), 1.2)
+        attach(blocks[0], 'block', at(7.4, 3.5), 1.15)
+        attach(blocks[0], 'block', at(7.4, 4.5), 1.15)
+        attach(blocks[1] ?? blocks[0], 'block', at(7.4, 4.0), 1.15, undefined, 'z', 0.99)
+        attach(blocks[1] ?? blocks[0], 'block', at(-7, 10), 1.05)
+        attach(blocks[0], 'block', at(-8.0, 10.9), 0.9)
       }
 
       // Columns flanking the rainbow arch.
       const columns = assets.get('column') ?? []
       if (columns.length) {
-        attach(columns[0], 'column', at(3, 14), 2.6)
-        attach(columns[1] ?? columns[0], 'column', at(15.5, 13), 2.4)
-        attach(columns[0], 'column', at(-4, -20), 2.2)
+        attach(columns[0], 'column', at(3, 14), 1.15)
+        attach(columns[1] ?? columns[0], 'column', at(15.5, 13), 1.05)
+        attach(columns[0], 'column', at(-4, -20), 1.0)
       }
 
       const wallArc = (center: THREE.Vector3, radiusM: number, from: number, to: number, scale: number) => {
@@ -302,7 +397,7 @@ export class World {
         const te = new THREE.Vector3().crossVectors(center, Y).normalize()
         const tn = new THREE.Vector3().crossVectors(te, center).normalize()
         const span = (to - from) * (Math.PI / 180)
-        const step = (scale * 1.02) / radiusM
+        const step = (asset.footprint * 2 * scale * 0.9) / radiusM
         const count = Math.max(2, Math.round(Math.abs(span) / step))
         for (let i = 0; i < count; i++) {
           const a = from * (Math.PI / 180) + (span * (i + 0.5)) / count
@@ -321,7 +416,7 @@ export class World {
       // Each capture point gets a low ruined wall on one side, so fights have cover.
       PAD_SPAWNS.forEach(([lat, lon], i) => {
         const center = dirFromLatLon(lat, lon)
-        wallArc(center, 8.5, 215 + i * 45, 292 + i * 45, 2.0)
+        wallArc(center, 8.5, 215 + i * 45, 292 + i * 45, 1.1)
         const blocks2 = assets.get('block') ?? []
         if (blocks2.length) {
           const te = new THREE.Vector3().crossVectors(center, Y).normalize()
@@ -334,7 +429,7 @@ export class World {
               .addScaledVector(te, Math.sin(5.6 / R) * Math.cos(a))
               .addScaledVector(tn, Math.sin(5.6 / R) * Math.sin(a))
               .normalize()
-            attach(blocks2[k % blocks2.length], 'block', dir, 1.4 + k * 0.2)
+            attach(blocks2[k % blocks2.length], 'block', dir, 0.95 + k * 0.15)
           }
         }
       })
@@ -344,7 +439,7 @@ export class World {
       if (barricades.length) {
         for (let i = 0; i < 4; i++) {
           const dir = at(-16 + i * 3.1, 36)
-          attach(barricades[i % barricades.length], 'barricade', dir, 1.9, east, 'z')
+          attach(barricades[i % barricades.length], 'barricade', dir, 1.1, east, 'x')
         }
       }
 
@@ -364,7 +459,7 @@ export class World {
   }
 
   private buildPlanet() {
-    const geo = new THREE.IcosahedronGeometry(1, 6)
+    const geo = new THREE.IcosahedronGeometry(1, 64)
     const pos = geo.attributes.position
     const colors = new Float32Array(pos.count * 3)
     const dir = new THREE.Vector3()
@@ -497,12 +592,15 @@ export class World {
 
   private sign(dir: THREE.Vector3, text: string) {
     const g = new THREE.Group()
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.06, 1.6, 6), this.mats.plum)
-    pole.position.y = 0.8
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 1.62, 8), this.mats.plum)
+    pole.position.y = 0.81
     g.add(pole)
+    const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.26, 0.16, 10), this.mats.candy)
+    foot.position.y = 0.08
+    g.add(outlined(foot))
     const board = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.25, 0.62),
-      new THREE.MeshBasicMaterial({ map: signTexture(text), side: THREE.DoubleSide }),
+      new THREE.BoxGeometry(1.25, 0.62, 0.09),
+      new THREE.MeshBasicMaterial({ map: signTexture(text) }),
     )
     board.position.set(0, 1.35, -0.04)
     g.add(board)
@@ -639,11 +737,28 @@ export class World {
   }
 
   /** Cheap instanced candy grass, flowers and pebbles — sells motion in first person. */
+  /** One instanced blade cluster instead of a lone spike: reads as turf, not weeds. */
+  private grassTuft(): THREE.BufferGeometry {
+    const parts: THREE.BufferGeometry[] = []
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + 0.4
+      const blade = new THREE.ConeGeometry(i % 2 ? 0.042 : 0.05, i % 2 ? 0.24 : 0.32, 3, 1, true)
+      const m = new THREE.Matrix4()
+        .makeRotationFromEuler(new THREE.Euler(Math.cos(a) * 0.22, a, Math.sin(a) * 0.22))
+        .setPosition(Math.cos(a) * 0.055, 0.13, Math.sin(a) * 0.055)
+      blade.applyMatrix4(m)
+      parts.push(blade)
+    }
+    const merged = mergeGeometries(parts, false)!
+    for (const part of parts) part.dispose()
+    return merged
+  }
+
   private addGroundDetail(scene: THREE.Scene) {
     const dummy = new THREE.Object3D()
     const dir = new THREE.Vector3()
     const color = new THREE.Color()
-    const grassTones = ['#A8EEC8', '#8FE4C2', '#C8F7DE', '#7FD9AE', '#FFE38A']
+    const grassTones = ['#7FD9AE', '#8FE4C2', '#A8EEC8', '#6ECFA6', '#C8F7DE']
     const flowerTones = ['#FF7FA8', '#FFE38A', '#9EDCFF', '#FFFDF8', '#C9A4F2']
     const pebbleTones = ['#FFE2A8', '#FFFDF8', '#F2ACE0', '#C9A4F2']
 
@@ -663,10 +778,15 @@ export class World {
       for (let i = 0; i < count; i++) {
         if (center) dir.copy(center).add(_jitter.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.42)).normalize()
         else dir.randomDirection()
+        // Clumping: low-frequency noise masks whole areas out so the ground
+        // reads as patches instead of an even sprinkle.
+        const patch = Math.sin(dir.x * 23 + dir.y * 17) * Math.cos(dir.z * 19)
+        if (Math.random() > 0.3 + patch * 0.55) continue
         const radius = surfaceRadius(dir)
         const s = THREE.MathUtils.lerp(scale[0], scale[1], Math.random())
-        dummy.position.copy(dir).multiplyScalar(radius + lift * s)
-        dummy.quaternion.setFromUnitVectors(Y, dir)
+        surfaceNormal(dir, _jitter)
+        dummy.position.copy(dir).multiplyScalar(radius).addScaledVector(_jitter, lift * s - 0.012)
+        dummy.quaternion.setFromUnitVectors(Y, _jitter)
         dummy.rotateY(Math.random() * Math.PI * 2)
         dummy.scale.set(s, s * THREE.MathUtils.lerp(yStretch[0], yStretch[1], Math.random()), s)
         dummy.updateMatrix()
@@ -682,15 +802,15 @@ export class World {
       scene.add(mesh)
     }
 
-    scatter(18000, new THREE.ConeGeometry(0.055, 0.34, 5), 0.14, [0.6, 1.3], [0.6, 1.2], grassTones)
-    scatter(2600, new THREE.IcosahedronGeometry(0.085, 0), 0.07, [0.6, 1], [0.7, 1.4], flowerTones)
-    scatter(1100, new THREE.DodecahedronGeometry(0.13, 0), 0.06, [0.35, 0.6], [0.5, 0.9], pebbleTones)
+    scatter(14000, this.grassTuft(), 0.1, [0.8, 1.3], [0.55, 1.15], grassTones)
+    scatter(1800, new THREE.IcosahedronGeometry(0.055, 0), 0.05, [0.6, 1], [0.7, 1.3], flowerTones)
+    scatter(1000, new THREE.DodecahedronGeometry(0.085, 0), 0.045, [0.35, 0.6], [0.5, 1], pebbleTones)
 
     // Extra density around the landing site so the opening shot has readable ground detail.
     const landing = dirFromLatLon(6, -40)
-    scatter(4600, new THREE.ConeGeometry(0.062, 0.4, 5), 0.16, [0.6, 1.3], [0.6, 1.2], grassTones, landing)
-    scatter(2400, new THREE.IcosahedronGeometry(0.085, 0), 0.07, [0.6, 1], [0.7, 1.4], flowerTones, landing)
-    scatter(1400, new THREE.DodecahedronGeometry(0.14, 0), 0.06, [0.35, 0.6], [0.6, 1.3], pebbleTones, landing)
+    scatter(6000, this.grassTuft(), 0.11, [0.8, 1.3], [0.55, 1.15], grassTones, landing)
+    scatter(1500, new THREE.IcosahedronGeometry(0.055, 0), 0.05, [0.6, 1], [0.7, 1.3], flowerTones, landing)
+    scatter(800, new THREE.DodecahedronGeometry(0.09, 0), 0.05, [0.35, 0.6], [0.6, 1.2], pebbleTones, landing)
   }
 
   private addMeadow(parent: THREE.Group) {

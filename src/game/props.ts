@@ -1,3 +1,9 @@
+/**
+ * Legacy: the Kenney GLB cover props. `world.ts` now builds cover procedurally
+ * in `cover.ts` so the crates, fences and columns share the candy palette, so
+ * nothing calls `loadPropAssets()` any more. Kept only for the `seeded` RNG and
+ * the `Obstacle` type, which are still in use.
+ */
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { gradientMap } from './toon'
