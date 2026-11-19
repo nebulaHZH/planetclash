@@ -82,7 +82,7 @@ export function buildNailong(asset: NailongAsset): GuestBuild {
   // Short arms, huge belly: the gun rides out in front of the tummy, where a
   // plush would hold it.
   const hands = new THREE.Group()
-  hands.position.set(0.16, asset.height * 0.42, 0.42)
+  hands.position.set(0.16, asset.height * 0.47, 0.44)
   group.add(body, hands)
 
   return { group, body, head, arms, legs, hands, height: asset.height, material }
