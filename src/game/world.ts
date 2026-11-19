@@ -85,7 +85,7 @@ export type DigHole = {
 }
 
 /** Digging stops at this depth below the local surface — the planet's floor. */
-export const DIG_MAX = 3
+export const DIG_MAX = 6
 /** How much dirt one scoop takes out, in metres of radius. */
 export const SCOOP_R = 1.62
 
