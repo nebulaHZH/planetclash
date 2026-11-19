@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { GunAsset } from './assets'
 import { buildGuest, isGuest, type GuestBuild } from './guests'
+import { buildUsagi, type UsagiAsset } from './usagi'
 import type { CharacterConfig } from '../config'
 
 /**
@@ -25,9 +26,12 @@ export class ToonRig {
   private flashValue = 0
   private currentName = 'Idle_A'
 
-  constructor(config: CharacterConfig) {
-    const model = isGuest(config.model) ? config.model : 'Chiikawa'
-    this.build = buildGuest(model)
+  constructor(config: CharacterConfig, sculpts?: Map<string, UsagiAsset>) {
+    // Sculpted guests (乌萨奇) ship as a baked geometry; the rest are built from
+    // primitives. Either way the rig only ever sees a `GuestBuild`.
+    const sculpt = sculpts?.get(config.model)
+    const fallback = isGuest(config.model) && config.model !== 'Usagi' ? config.model : 'Chiikawa'
+    this.build = sculpt ? buildUsagi(sculpt) : buildGuest(fallback)
     this.height = this.build.height
     this.build.group.add(this.tip)
     this.root.add(this.build.group)
@@ -145,7 +149,8 @@ export class ToonRig {
   dispose() {
     this.build.group.traverse((obj) => {
       const mesh = obj as THREE.Mesh
-      if (mesh.isMesh) mesh.geometry.dispose()
+      // Sculpted guests share one baked geometry across every instance.
+      if (mesh.isMesh && !mesh.geometry.userData.shared) mesh.geometry.dispose()
     })
     this.build.material.dispose()
   }

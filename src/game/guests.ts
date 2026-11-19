@@ -12,7 +12,7 @@ import { bakeGroup, ownedMaterial } from './bake'
  * the KayKit rigs that `enemies.ts` and `world.ts` already position.
  */
 
-export type GuestModel = 'Chiikawa' | 'Nailong' | 'GGBond'
+export type GuestModel = 'Chiikawa' | 'Nailong' | 'GGBond' | 'Usagi'
 
 export type GuestBuild = {
   group: THREE.Group
@@ -98,13 +98,20 @@ type Spec = {
 /** Pivot, bake, assemble. Each callback draws around its own pivot origin. */
 function assemble(spec: Spec): GuestBuild {
   const material = ownedMaterial()
+  // Bake the primitives into one mesh and drop the originals: leaving them in
+  // would draw every limb twice.
+  const baked = (g: THREE.Group) => {
+    const mesh = bakeGroup(g, material)
+    g.clear()
+    g.add(mesh)
+  }
   const group = new THREE.Group()
   // Parts are drawn at their pivot, baked, then moved into place, so the bake
   // never folds the pivot offset into the geometry.
   const head = new THREE.Group()
   head.userData.head = true
   spec.head(head)
-  head.add(bakeGroup(head, material))
+  baked(head)
   head.position.y = spec.headY
 
   const arms: THREE.Group[] = []
@@ -112,20 +119,20 @@ function assemble(spec: Spec): GuestBuild {
   for (const side of [-1, 1]) {
     const arm = new THREE.Group()
     spec.arm(arm, side)
-    arm.add(bakeGroup(arm, material))
+    baked(arm)
     arm.position.set(side * spec.shoulder[0], spec.shoulder[1], 0)
     arms.push(arm)
 
     const leg = new THREE.Group()
     spec.leg(leg, side)
-    leg.add(bakeGroup(leg, material))
+    baked(leg)
     leg.position.set(side * spec.hip[0], spec.hip[1], 0)
     legs.push(leg)
   }
 
   const body = new THREE.Group()
   spec.torso(body)
-  body.add(bakeGroup(body, material))
+  baked(body)
   body.add(head, ...arms, ...legs)
 
   const hands = new THREE.Group()
@@ -296,7 +303,7 @@ function ggbond(): GuestBuild {
 }
 
 export function isGuest(model: string): model is GuestModel {
-  return model === 'Chiikawa' || model === 'Nailong' || model === 'GGBond'
+  return model === 'Chiikawa' || model === 'Nailong' || model === 'GGBond' || model === 'Usagi'
 }
 
 export function buildGuest(model: GuestModel): GuestBuild {

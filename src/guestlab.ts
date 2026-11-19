@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { CHARACTERS, COLORS } from './config'
 import { ToonRig } from './game/toonrig'
-import { isGuest } from './game/guests'
+import { buildUsagiAsset } from './game/usagi'
 
 /** Look-dev page for the procedural guest mascots: /guests.html */
 const renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -50,30 +50,39 @@ const rigs: ToonRig[] = []
 const guests = CHARACTERS.filter((c) => c.guest)
 
 async function main() {
-  const gunGltf = await loader.loadAsync('/assets/guns/blaster-d.glb')
+  const [gunGltf, usagiGltf] = await Promise.all([
+    loader.loadAsync('/assets/guns/blaster-d.glb'),
+    loader.loadAsync('/assets/chars/usagi/usagi.glb'),
+  ])
+  const sculpts = new Map([['Usagi', buildUsagiAsset(usagiGltf.scene)]])
   const gunScene = gunGltf.scene
   gunScene.updateMatrixWorld(true)
   const box = new THREE.Box3().setFromObject(gunScene)
   const size0 = box.getSize(new THREE.Vector3())
   document.title = `gun ${size0.x.toFixed(2)} ${size0.y.toFixed(2)} ${size0.z.toFixed(2)}`
   gunScene.scale.setScalar(0.66 / Math.max(0.001, Math.max(box.getSize(new THREE.Vector3()).x, box.getSize(new THREE.Vector3()).z)))
-  const gun = { scene: new THREE.Group().add(gunScene), tip: 0.3 }
+  const gun = { scene: new THREE.Group().add(gunScene), tip: 0.3, size: new THREE.Vector3(0.66, 0.2, 0.2), tint: 0.14, grip: [0, 0, 0] as const }
 
+  const n = guests.length
   guests.forEach((config, i) => {
-    const rig = new ToonRig(config)
+    const rig = new ToonRig(config, sculpts)
+    const x = (i - (n - 1) / 2) * 3.1
     rig.setGun(gun)
-    rig.root.position.set((i - 1) * 3.1, 0, 0)
-    rig.root.rotation.y = (i - 1) * -0.22
+    rig.root.position.set(x, 0, 0)
+    rig.root.rotation.y = -x * 0.07
     scene.add(rig.root)
     rigs.push(rig)
 
     const label = document.createElement('div')
     label.className = 'label'
     label.textContent = `${config.name} · ${config.role}`
-    label.style.left = `${50 + (i - 1) * 20.5}%`
+    label.style.left = `${50 + (x / (n * 3.1)) * 100}%`
     document.body.appendChild(label)
   })
 }
+
+// Handy from the devtools console: focus one guest for a close look.
+;(window as unknown as Record<string, unknown>).__lab = { scene, camera, rigs, renderer }
 
 let t = 0
 let phase = 0

@@ -50,7 +50,7 @@ export type Hat = 'crown' | 'antenna' | 'cat' | 'mushroom' | 'tuft' | 'bean' | '
 /** KayKit GLB models, plus the hand-built guest mascots in `guests.ts`. */
 export type CharacterModel =
   | 'Knight' | 'Barbarian' | 'Mage' | 'Ranger' | 'Rogue' | 'Rogue_Hooded'
-  | 'Chiikawa' | 'Nailong' | 'GGBond'
+  | 'Chiikawa' | 'Nailong' | 'GGBond' | 'Usagi'
 export type Expression = 'happy' | 'focused' | 'hurt' | 'ko'
 
 export type CharacterConfig = {
@@ -112,6 +112,11 @@ export const CHARACTERS: CharacterConfig[] = [
     id: 'nailong', name: '奶龙', role: '胖龙', headScale: 1, guest: true,
     bodyColor: '#FFE0A0', accentColor: COLORS.lemon, hat: 'horn', expression: 'happy', weaponSkin: 'gold', model: 'Nailong', speed: .92, health: 5,
     description: '五颗爱心 · 圆滚滚的肉盾',
+  },
+  {
+    id: 'usagi', name: '乌萨奇', role: '元气兔子', headScale: 1, guest: true,
+    bodyColor: '#FFF6DC', accentColor: COLORS.lemon, hat: 'tuft', expression: 'happy', weaponSkin: 'gold', model: 'Usagi', speed: 1.12, health: 3,
+    description: '三颗爱心 · 蹦蹦跳跳冲最前',
   },
   {
     id: 'ggbond', name: '猪猪侠', role: '超级英雄', headScale: 1, guest: true,

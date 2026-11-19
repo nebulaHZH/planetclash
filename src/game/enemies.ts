@@ -1,7 +1,8 @@
 import * as THREE from 'three'
-import { CHARACTERS, COLORS, type CharacterConfig } from '../config'
+import { CHARACTERS, COLORS, PHYSICS, type CharacterConfig } from '../config'
 import { alertTexture, radialTexture } from './toon'
 import { dirFromLatLon, surfaceRadius } from './world'
+import type { Obstacle } from './props'
 import { ENEMY_SPAWNS } from './landmarks'
 import { CharacterRig } from './rig'
 import { ToonRig } from './toonrig'
@@ -42,10 +43,26 @@ export type Enemy = {
   up: THREE.Vector3
   pos: THREE.Vector3
   gunTip: THREE.Vector3
+  /** Spawn point on the unit sphere, plus the drift it returns to when idle. */
+  home: THREE.Vector3
+  strafe: number
+  moving: boolean
 }
 
 const _v = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
+const _pl = new THREE.Vector3()
+const _fwd = new THREE.Vector3()
+const _side = new THREE.Vector3()
+const _move = new THREE.Vector3()
+const _push = new THREE.Vector3()
+const _tangent = new THREE.Vector3(1, 0, 0)
+const _upv = new THREE.Vector3(0, 1, 0)
+/** Metres. Enemies only notice the player inside SIGHT and hold STANDOFF. */
+const SIGHT = 34
+const STANDOFF = 12
+const CHASE_SPEED = 3.5
+const DRIFT_SPEED = 1.5
 const _ab = new THREE.Vector3()
 const _closest = new THREE.Vector3()
 const _dir = new THREE.Vector3()
@@ -64,6 +81,8 @@ export class EnemyManager {
   enemies: Enemy[] = []
   /** Props and walls that stop bullets and break enemy line of sight. */
   occluders: THREE.Object3D[] = []
+  /** Cover the cast steers around, shared with the player's collision list. */
+  obstacles: Obstacle[] = []
   private bullets: Bullet[] = []
   private ray = new THREE.Raycaster()
   private barBgMat = new THREE.MeshBasicMaterial({ color: COLORS.outline, transparent: true, opacity: 0.75 })
@@ -106,7 +125,7 @@ export class EnemyManager {
       const gun = assets.guns[index % assets.guns.length]
       let rig: CharacterRig | ToonRig
       if (isGuest(config.model)) {
-        rig = new ToonRig(config)
+        rig = new ToonRig(config, assets.sculpts)
       } else {
         const source = assets.characters.get(config.model)
         if (!source) return
@@ -162,9 +181,27 @@ export class EnemyManager {
         up: new THREE.Vector3(0, 1, 0),
         pos: new THREE.Vector3(),
         gunTip: new THREE.Vector3(),
+        home: dirFromLatLon(lat, lon),
+        strafe: Math.random() < 0.5 ? -1 : 1,
+        moving: false,
       })
     })
     this.reset()
+  }
+
+  /** Slide along cover instead of walking through it. */
+  private avoidCover(anchor: THREE.Vector3) {
+    for (const obstacle of this.obstacles) {
+      if (obstacle.dir.dot(anchor) < 0.99) continue
+      const gap = Math.acos(THREE.MathUtils.clamp(obstacle.dir.dot(anchor), -1, 1)) * PHYSICS.radius
+      if (gap > obstacle.radius + 0.55) continue
+      // Push straight back out along the surface, with a little tangent drift so
+      // the enemy never jitters on the exact boundary.
+      _push.copy(anchor).addScaledVector(obstacle.dir, -anchor.dot(obstacle.dir))
+      if (_push.lengthSq() < 1e-8) continue
+      _push.normalize().addScaledVector(obstacle.dir, 0.35).normalize()
+      anchor.addScaledVector(_push, (obstacle.radius + 0.55 - gap + 0.02) / PHYSICS.radius).normalize()
+    }
   }
 
   get aliveCount() {
@@ -248,6 +285,41 @@ export class EnemyManager {
         continue
       }
 
+      // ---- locomotion ----------------------------------------------------
+      // The cast are free agents on the sphere: they close to STANDOFF and
+      // circle-strafe once engaged, and drift back to their spawn when alone.
+      _pl.copy(eye).normalize()
+      const arc = Math.acos(THREE.MathUtils.clamp(enemy.anchor.dot(_pl), -1, 1)) * PHYSICS.radius
+      let speed = 0
+      if (playerAlive && arc < SIGHT) {
+        const radial = THREE.MathUtils.clamp((arc - STANDOFF) / 5, -1, 1)
+        _fwd.copy(_pl).addScaledVector(enemy.anchor, -enemy.anchor.dot(_pl))
+        if (_fwd.lengthSq() < 1e-6) _fwd.copy(_tangent)
+        _fwd.normalize()
+        _side.crossVectors(enemy.anchor, _fwd).normalize()
+        _move.copy(_fwd).multiplyScalar(radial)
+        _move.addScaledVector(_side, enemy.strafe * 0.7 * (1 - Math.abs(radial) * 0.6))
+        speed = CHASE_SPEED * (0.75 + 0.25 * Math.abs(radial) + 0.25)
+      } else {
+        const homeArc = Math.acos(THREE.MathUtils.clamp(enemy.anchor.dot(enemy.home), -1, 1)) * PHYSICS.radius
+        _fwd.copy(enemy.home).addScaledVector(enemy.anchor, -enemy.anchor.dot(enemy.home))
+        if (homeArc > 3 && _fwd.lengthSq() > 1e-6) {
+          _move.copy(_fwd.normalize())
+          speed = DRIFT_SPEED
+        } else {
+          // Home already: nose around slowly so the field never looks frozen.
+          _side.crossVectors(enemy.anchor, _tangent)
+          if (_side.lengthSq() < 1e-6) _side.crossVectors(enemy.anchor, _upv)
+          _move.copy(_side.normalize()).multiplyScalar(Math.sin(time * 0.4 + enemy.phase))
+          speed = DRIFT_SPEED * 0.55
+        }
+      }
+      if (speed > 0.05) {
+        enemy.anchor.addScaledVector(_move, (speed * dt) / PHYSICS.radius).normalize()
+        this.avoidCover(enemy.anchor)
+      }
+      enemy.moving = speed > 0.4
+
       enemy.up.copy(enemy.anchor).normalize()
       _v.copy(enemy.anchor)
       const radius = surfaceRadius(_v)
@@ -282,7 +354,7 @@ export class EnemyManager {
       }
 
       // Pose: aiming while charging, idle otherwise. Locks let one-shot clips finish.
-      if (enemy.animLock <= 0) enemy.rig.play(enemy.alert > 0 ? 'Ranged_1H_Aiming' : 'Idle_A')
+      if (enemy.animLock <= 0) enemy.rig.play(enemy.alert > 0 ? 'Ranged_1H_Aiming' : enemy.moving ? 'Running_A' : 'Idle_A')
 
       // telegraph + shoot
       if (enemy.alert > 0) {

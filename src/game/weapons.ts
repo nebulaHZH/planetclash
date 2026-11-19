@@ -3,7 +3,7 @@ import { COLORS, WEAPONS, type CharacterConfig, type WeaponConfig } from '../con
 import type { Player } from './player'
 import type { GameAudio } from './audio'
 import type { GunAsset } from './assets'
-import { gradientMap, toon } from './toon'
+import { OUTLINE_MAT, gradientMap, toon } from './toon'
 
 export type WeaponHooks = {
   onShoot: (weapon: WeaponConfig, spread: number) => void
@@ -19,17 +19,27 @@ type Model = {
   flashLight: THREE.PointLight
   mag: THREE.Object3D | null
   magBase: THREE.Vector3
+  gun: THREE.Object3D | null
+  grip: readonly [number, number, number]
   mats: THREE.Material[]
   geos: THREE.BufferGeometry[]
 }
 
-const HIP = new THREE.Vector3(0.185, -0.175, -0.6)
-const ADS = new THREE.Vector3(0.028, -0.098, -0.52)
-/** Kenney blasters are normalised to 0.66 m in assets.ts. */
-const GUN_LENGTH = 0.32
+const HIP = new THREE.Vector3(0.152, -0.143, -0.485)
+const ADS = new THREE.Vector3(0.0, -0.185, -0.52)
+/** Sourced guns are normalised to 0.5 m in assets.ts; this is the on-screen length. */
+const GUN_LENGTH = 0.4
 const _v = new THREE.Vector3()
 const _dir = new THREE.Vector3()
 const _up = new THREE.Vector3(0, 1, 0)
+const _right = new THREE.Vector3(1, 0, 0)
+const _tmp = new THREE.Vector3()
+/** One finger, reused by both hands: a capsule lying along its own Y. */
+const fingerGeo = new THREE.CapsuleGeometry(0.0105, 0.036, 4, 12)
+/** Fingertip/nail-side cap, reused by both hands. */
+const tipGeo = new THREE.SphereGeometry(0.0105, 12, 10)
+const _alongX = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2)
+const _alongZ = new THREE.Quaternion().setFromAxisAngle(_right, Math.PI / 2)
 const _tint = new THREE.Color()
 
 type Shell = { mesh: THREE.Mesh; vel: THREE.Vector3; spin: THREE.Vector3; life: number }
@@ -166,38 +176,119 @@ export class WeaponSystem {
     const sleeve = toon(character.accentColor)
     mats.push(glove, sleeve)
     const muzzle = new THREE.Vector3(0, 0.012, -0.34)
+    let gunObj: THREE.Object3D | null = null
     let mag: THREE.Object3D | null = null
     const magBase = new THREE.Vector3()
 
-    const addHand = (x: number, y: number, z: number, radius: number) => {
-      const geo = new THREE.SphereGeometry(radius, 14, 12)
+    const cuffMat = toon('#FFFDF8')
+    const skinMat = toon(COLORS.skin)
+    mats.push(cuffMat, skinMat)
+
+    const addPart = (geo: THREE.BufferGeometry, mat: THREE.Material, pos: THREE.Vector3, quat?: THREE.Quaternion, size?: THREE.Vector3) => {
       geos.push(geo)
-      const hand = new THREE.Mesh(geo, glove)
-      hand.position.set(x, y, z)
-      hand.scale.set(1, 0.9, 1.24)
-      group.add(hand)
+      const mesh = new THREE.Mesh(geo, mat)
+      mesh.position.copy(pos)
+      if (quat) mesh.quaternion.copy(quat)
+      if (size) mesh.scale.copy(size)
+      group.add(mesh)
+      return mesh
     }
 
-    const addSleeve = (from: THREE.Vector3, to: THREE.Vector3, radius: number) => {
-      _dir.subVectors(to, from)
-      const length = _dir.length()
-      const geo = new THREE.CapsuleGeometry(radius, Math.max(0.02, length - radius * 2), 4, 10)
-      geos.push(geo)
-      const arm = new THREE.Mesh(geo, sleeve)
-      arm.position.copy(from).addScaledVector(_dir, 0.5)
-      arm.quaternion.setFromUnitVectors(_up, _dir.normalize())
-      group.add(arm)
+    /**
+     * A fist around the weapon: rounded back of the hand, three knuckle bumps, a thumb
+     * hooked over the top, then a knit cuff and a tapered forearm running off frame.
+     */
+    const addHand = (anchor: THREE.Vector3, mirror: boolean, wrist: THREE.Vector3, elbow: THREE.Vector3) => {
+      const s = mirror ? -1 : 1
+      /** A part plus its ink shell, so the hand reads like the rest of the game. */
+      const handPart = (geo: THREE.BufferGeometry, mat: THREE.Material, pos: THREE.Vector3, quat: THREE.Quaternion, size: THREE.Vector3) => {
+        const mesh = addPart(geo, mat, pos, quat, size)
+        if (mat !== cuffMat) {
+          const shell = new THREE.Mesh(geo, OUTLINE_MAT)
+          shell.scale.setScalar(1.09)
+          shell.renderOrder = -1
+          mesh.add(shell)
+        }
+        return mesh
+      }
+
+      // Back of the hand: flattened, taller than wide, angled toward the grip.
+      handPart(
+        new THREE.SphereGeometry(0.03, 18, 14),
+        glove,
+        anchor.clone().add(_tmp.set(0.03 * s, 0.004, 0.014)),
+        new THREE.Quaternion().setFromEuler(new THREE.Euler(0.16, -0.34 * s, 0.12 * s)),
+        new THREE.Vector3(0.86, 1.22, 1.0),
+      )
+
+      // Four fingers stacked down the front of the grip, each a little shorter and
+      // more curled than the one above it.
+      for (let i = 0; i < 4; i++) {
+        const len = 1 - i * 0.1
+        const curl = 0.16 + i * 0.1
+        addPart(
+          fingerGeo,
+          glove,
+          anchor.clone().add(_tmp.set((0.004 + i * 0.002) * s, 0.026 - i * 0.0168, -0.026 + i * 0.0035)),
+          _alongX.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, curl * s, 0.1 * s))),
+          new THREE.Vector3(len, 1, len),
+        )
+        addPart(
+          tipGeo,
+          glove,
+          anchor.clone().add(_tmp.set(0.026 * s, 0.026 - i * 0.0168, -0.033 + i * 0.004)),
+          _alongX.clone(),
+          new THREE.Vector3(0.95, 0.95, 0.95),
+        )
+      }
+
+      // Thumb hooks over the top of the grip toward the barrel.
+      addPart(
+        fingerGeo,
+        glove,
+        anchor.clone().add(_tmp.set(0.026 * s, 0.032, -0.006)),
+        _alongZ.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.5 * s, 0, 0))),
+        new THREE.Vector3(1.1, 1.15, 1.1),
+      )
+
+      // Ribbed knit cuff, then a short sleeve stub that leaves frame before it can
+      // foreshorten into blocks. No long forearm: it only ever reads as clutter.
+      _dir.subVectors(wrist, anchor).normalize()
+      const cuffQ = new THREE.Quaternion().setFromUnitVectors(_up, _dir)
+      handPart(new THREE.CylinderGeometry(0.031, 0.027, 0.03, 16), sleeve, anchor.clone().addScaledVector(_dir, 0.028), cuffQ, new THREE.Vector3(1, 1, 1))
+      for (let i = 0; i < 2; i++) {
+        addPart(
+          new THREE.TorusGeometry(0.0285, 0.0042, 8, 16),
+          cuffMat,
+          anchor.clone().addScaledVector(_dir, 0.036 + i * 0.017),
+          cuffQ.clone().multiply(new THREE.Quaternion().setFromAxisAngle(_right, Math.PI / 2)),
+        )
+      }
+      _dir.subVectors(elbow, anchor).normalize()
+      const stub = Math.min(0.34, elbow.distanceTo(anchor) * 0.45)
+      handPart(
+        new THREE.CylinderGeometry(0.034, 0.027, stub, 14),
+        sleeve,
+        anchor.clone().addScaledVector(_dir, 0.062 + stub * 0.5),
+        new THREE.Quaternion().setFromUnitVectors(_up, _dir),
+        new THREE.Vector3(1, 1, 1),
+      )
     }
 
     if (asset) {
       const gun = asset.scene.clone(true)
+      gunObj = gun
       gun.traverse((obj) => {
         const mesh = obj as THREE.Mesh
         if (!mesh.isMesh) return
         const src = mesh.material as THREE.MeshStandardMaterial
         const mat = new THREE.MeshToonMaterial({
           map: src.map ?? null,
-          color: _tint.copy(src.color ?? new THREE.Color('#ffffff')).lerp(new THREE.Color(weapon.color), 0.3),
+          // Sourced guns arrive in muddy factory colours: warm them toward the palette.
+          color: _tint
+            .copy(src.color ?? new THREE.Color('#ffffff'))
+            .lerp(new THREE.Color('#ffffff'), 0.16)
+            .lerp(new THREE.Color(weapon.color), asset.tint),
           gradientMap: gradientMap(),
         })
         mats.push(mat)
@@ -209,20 +300,29 @@ export class WeaponSystem {
           magBase.copy(mesh.position)
         }
       })
-      const scale = GUN_LENGTH / (asset.tip * 2)
+      const cross = Math.max(asset.size.x, asset.size.y)
+      const scale = Math.min(GUN_LENGTH / Math.max(0.01, asset.tip * 2), 0.155 / Math.max(0.01, cross))
       gun.scale.setScalar(scale)
       // Barrel points down -Z in view space.
       gun.rotation.y = Math.PI
-      gun.position.set(0.004, 0.012, -0.02)
+      gun.position.set(0.004, 0.012, -0.055)
       group.add(gun)
       muzzle.set(0.004, 0.012, -0.02 - asset.tip * scale - 0.02)
 
       // Right hand on the grip, left hand under the barrel for the two-handers.
-      addHand(0.024, -0.048, 0.052, 0.047)
-      addSleeve(new THREE.Vector3(0.03, -0.06, 0.06), new THREE.Vector3(0.29, -0.52, 0.26), 0.046)
+      addHand(
+        new THREE.Vector3(0.0, -0.062, 0.03),
+        false,
+        new THREE.Vector3(0.13, -0.175, 0.04),
+        new THREE.Vector3(0.2, -0.5, 0.26),
+      )
       if (weapon.pellets > 1 || weapon.auto) {
-        addHand(-0.104, -0.026, -0.11, 0.044)
-        addSleeve(new THREE.Vector3(-0.115, -0.036, -0.1), new THREE.Vector3(-0.32, -0.5, 0.12), 0.042)
+        addHand(
+          new THREE.Vector3(0.02, -0.062, -0.13),
+          true,
+          new THREE.Vector3(-0.11, -0.165, -0.05),
+          new THREE.Vector3(-0.26, -0.5, 0.24),
+        )
       }
     } else {
       // Pre-asset fallback so the weapon system is never empty.
@@ -235,8 +335,12 @@ export class WeaponSystem {
       barrel.position.set(0, 0.015, -0.26)
       barrel.rotation.x = Math.PI / 2
       group.add(barrel)
-      addHand(0.024, -0.05, 0.06, 0.047)
-      addSleeve(new THREE.Vector3(0.03, -0.06, 0.07), new THREE.Vector3(0.29, -0.52, 0.26), 0.046)
+      addHand(
+        new THREE.Vector3(0.0, -0.062, 0.03),
+        false,
+        new THREE.Vector3(0.13, -0.175, 0.04),
+        new THREE.Vector3(0.2, -0.5, 0.26),
+      )
       muzzle.set(0, 0.015, -0.34)
     }
 
@@ -260,7 +364,11 @@ export class WeaponSystem {
     group.add(flashLight)
 
     group.position.copy(HIP)
-    return { group, flash, flashMat, flashLight, mag, magBase, mats, geos }
+    return {
+      group, flash, flashMat, flashLight, mag, magBase, mats, geos,
+      gun: gunObj,
+      grip: asset?.grip ?? [0, 0, 0],
+    }
   }
 
   reset() {
@@ -468,13 +576,21 @@ export class WeaponSystem {
     group.position.lerp(_v, 1 - Math.exp(-24 * dt))
 
     const rotX = this.kick * 0.24 - lift * 0.7 + dip * 0.55
-    const rotY = this.swayX * 3.2 * swayScale + (1 - this.aimLerp) * 0.07 + Math.sin(this.time * 1.1) * 0.008 * idle
+    const rotY = this.swayX * 3.2 * swayScale + (1 - this.aimLerp) * 0.15 + Math.sin(this.time * 1.1) * 0.008 * idle
     const rotZ = lift * 0.35 + Math.sin(phase) * 0.012 * moving + dip * 0.2
     group.rotation.x += (rotX - group.rotation.x) * Math.min(1, dt * 18)
     group.rotation.y += (rotY - group.rotation.y) * Math.min(1, dt * 12)
     group.rotation.z += (rotZ - group.rotation.z) * Math.min(1, dt * 12)
 
     if (model.mag) model.mag.position.y = model.magBase.y - dip * 0.11
+    // Grips that sit off-centre on the model are nudged in the hip pose only; aimed
+    // fire lines the barrel itself up with the crosshair.
+    if (model.gun) {
+      const k = 1 - this.aimLerp
+      model.gun.position.x = 0.004 + model.grip[0] * k
+      model.gun.position.y = 0.012 + model.grip[1] * k
+      model.gun.position.z = -0.055 + model.grip[2] * k
+    }
 
     for (const m of this.models) {
       const firing = m === model && this.flashT > 0

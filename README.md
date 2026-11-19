@@ -1,8 +1,19 @@
 # PLANET CLASH · 星球小队
 
-第一人称「小星球」泡泡射击。在一颗半径 40 米的糖果星球上，用泡泡枪把 7 个捣蛋鬼送回糖果盒，顺手占领两个据点。
+第一人称「小星球」泡泡射击。在一颗半径 96 米的糖果星球上，用泡泡枪把 7 个捣蛋鬼送回糖果盒，顺手占领两个据点。
 
-**零外部资源**：没有 CDN、字体文件、图片或音频文件。贴图由 Canvas 实时绘制，音效由 Web Audio 合成，模型全部来自 Three.js 内置几何体。
+**外部资源只有模型**：没有 CDN、字体文件、图片或音频文件。贴图由 Canvas 实时绘制，音效由 Web Audio 合成，地形与掩体全部由代码生成。
+
+## 素材与许可
+
+| 用途 | 来源 | 许可 |
+| --- | --- | --- |
+| 角色模型与动作 | [KayKit Character Pack](https://kaylousberg.itch.io/) | CC0 |
+| 部分道具 | [Kenney](https://kenney.nl/) | CC0 |
+| 枪模 `raygun` / `coilgun` / `launcher` | [Poly Pizza](https://poly.pizza/) — Raygun by Gabriel Valdivia、Coil Gun by Vas Pupin、Sci-Fi Grenade Launcher | CC-BY 3.0 |
+| 乌萨奇 / 吉伊卡哇 / 奶龙 / 猪猪侠 | 程序化重建，无外部模型文件 | 同人练习，不商用 |
+
+CC-BY 模型在 `src/game/assets.ts` 顶部注释中标注了作者；分发本作时请保留这些署名。
 
 ## 运行
 
@@ -57,7 +68,7 @@ src/
     player.ts        球面移动、跳跃、体力、头部摆动
     world.ts         星球、天空、地面细节、据点、地标
     enemies.ts       敌人 AI、血条、子弹池、曲率视线
-    weapons.ts       三把枪的程序化模型与手感
+    weapons.ts       三把 GLB 枪模的第一人称手套 / 手感
     toon.ts          卡通材质、描边、角色、程序化贴图
     fx.ts            粒子 / 彩纸 / 轨迹 / 光环
     audio.ts         Web Audio 合成音效

@@ -118,6 +118,7 @@ export class Game {
     this.weapons.setCharacter(this.character)
     this.enemies = new EnemyManager(this.scene, this.fx, this.audio)
     this.player.obstacles = this.world.obstacles
+    this.enemies.obstacles = this.world.obstacles
     void this.world.loadProps().then(() => {
       this.enemies.occluders = this.world.solids
     })
