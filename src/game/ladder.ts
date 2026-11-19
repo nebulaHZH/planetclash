@@ -36,14 +36,16 @@ export class LadderField {
   /**
    * Stand a ladder at `dir`. Height is measured from the pit floor to the
    * highest ground within a few metres, so a deep pit gets a tall ladder.
+   * `baseHint` pins the foot (used when the spot is under a roof, where the
+   * sky-march only finds the grass on top).
    */
-  place(dir: THREE.Vector3): Ladder | null {
+  place(dir: THREE.Vector3, baseHint?: number): Ladder | null {
     if (this.ladders.length >= MAX_LADDERS) return null
     const foot = dir.clone().normalize()
     // One per spot.
     if (this.nearest(foot, 1.1)) return null
 
-    const base = surfaceRadius(foot)
+    const base = baseHint ?? surfaceRadius(foot)
     let best = base
     const exitDir = foot.clone()
     _e1.crossVectors(foot, Math.abs(foot.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)).normalize()

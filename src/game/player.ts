@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { PHYSICS } from '../config'
-import { surfaceRadius } from './world'
+import { dirtPush, groundRadius, isDirt, surfaceRadius } from './world'
 import type { Obstacle } from './props'
 import type { Ladder } from './ladder'
 
@@ -17,6 +17,9 @@ export type MoveInput = {
 
 const _up = new THREE.Vector3(0, 1, 0)
 const _away = new THREE.Vector3()
+const _head = new THREE.Vector3()
+const _knee = new THREE.Vector3()
+const _push = new THREE.Vector3()
 /** Steeper than this and you need the ladder. */
 const MAX_SLOPE = 1.15
 const CLIMB_SPEED = 2.9
@@ -165,11 +168,13 @@ export class Player {
 
     const startRadius = this.surface + this.alt
     const distance = this.moveVel.length() * dt
+    let ground: number
+    let surf: number
     if (distance > 1e-6) {
       const tangent = this.moveVel.clone().normalize()
       const oldUp = this.dir.clone()
       const oldHeading = this.heading.clone()
-      const next = oldUp.clone().addScaledVector(tangent, distance / this.surface).normalize()
+      const next = oldUp.clone().addScaledVector(tangent, distance / Math.max(2, startRadius)).normalize()
       const transport = new THREE.Quaternion().setFromUnitVectors(oldUp, next)
       this.heading.applyQuaternion(transport)
       this.dir.copy(next)
@@ -177,17 +182,25 @@ export class Player {
       if (this.heading.lengthSq() < 0.001) this.heading.set(1, 0, 0).projectOnPlane(this.dir)
       this.heading.normalize()
 
-      // Walking keeps the feet at the same world height while the ground moves
-      // under them, which is what makes stepping off a pit rim a real fall.
-      const surf = surfaceRadius(this.dir)
-      if (this.grounded && surf - startRadius > distance * MAX_SLOPE + 0.06) {
-        // A wall of dirt: refuse the step instead of teleporting up it.
+      // The floor is the field, not the height field: inside a dug tunnel it
+      // sits below the grass, and only a roof-aware query keeps the feet down
+      // there. A wall of dirt still refuses the step; a rim is still a fall.
+      ground = groundRadius(this.dir, startRadius + 0.06)
+      surf = this.surface
+      if (this.grounded && ground - startRadius > distance * MAX_SLOPE + 0.06) {
         this.dir.copy(oldUp)
         this.heading.copy(oldHeading)
         this.moveVel.multiplyScalar(0.15)
+        surf = this.surface
+        ground = startRadius
       } else {
+        // Walking keeps the feet at the same world height while the ground
+        // moves under them, which is what makes stepping off a rim a real fall.
         this.alt = startRadius - surf
       }
+    } else {
+      ground = groundRadius(this.dir, startRadius + 0.06)
+      surf = this.surface
     }
 
     if (input.ladder && this.grounded && input.forward > 0.3) {
@@ -197,9 +210,10 @@ export class Player {
       }
     }
 
-    // Crates, fence rails and barricades are standable: anything solid under
-    // the feet becomes the floor, so the jump can get you on top of them.
-    const floor = this.supportLevel()
+    // Crates, fence rails, tunnel floors: whatever is highest under the feet.
+    // A candidate above the head is a wall, not a floor.
+    const sup = surf + this.supportLevel()
+    const floor = (sup <= startRadius + 0.3 ? Math.max(ground, sup) : ground) - surf
 
     if (this.jumpBuffer > 0 && (this.grounded || this.coyote > 0)) {
       this.jumpBuffer = 0
@@ -221,6 +235,15 @@ export class Player {
       const pull = this.velY > 0 ? PHYSICS.gravity : PHYSICS.gravityFall
       this.velY = Math.max(-PHYSICS.terminal, this.velY - pull * dt)
       this.alt += this.velY * dt
+      // Bonk: rising into the roof of a tunnel stops the jump instead of
+      // poking through into the dirt.
+      if (this.velY > 0) {
+        _head.copy(this.dir).multiplyScalar(surf + this.alt + PHYSICS.eyeHeight)
+        if (isDirt(_head)) {
+          this.alt -= this.velY * dt
+          this.velY = 0
+        }
+      }
       if (this.velY <= 0 && this.alt <= floor) {
         this.landImpact = Math.abs(this.velY)
         this.alt = floor
@@ -239,6 +262,7 @@ export class Player {
 
     this.coyote = this.grounded ? 0.12 : Math.max(0, this.coyote - dt)
     this.collide()
+    this.dirtPush()
 
     this.landDip += (0 - this.landDip) * Math.min(1, dt * 11)
 
@@ -322,5 +346,17 @@ export class Player {
         if (into < 0) this.moveVel.addScaledVector(_away, -into)
       }
     }
+  }
+
+  /** Tunnel walls: the field gradient nudges the body back into the cavity. */
+  private dirtPush() {
+    _knee.copy(this.dir).multiplyScalar(Math.max(4, this.surface + this.alt) + 0.55)
+    if (!dirtPush(_knee, _push)) return
+    _push.addScaledVector(this.dir, -_push.dot(this.dir))
+    if (_push.lengthSq() < 1e-8) return
+    this.dir.addScaledVector(_push, 1 / Math.max(4, this.surface + this.alt)).normalize()
+    this.heading.addScaledVector(this.dir, -this.heading.dot(this.dir))
+    if (this.heading.lengthSq() < 1e-6) this.heading.set(1, 0, 0).projectOnPlane(this.dir)
+    this.heading.normalize()
   }
 }

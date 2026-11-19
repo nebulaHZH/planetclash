@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { CHARACTERS, COLORS, GAME, PHYSICS, type CharacterConfig, type WeaponConfig } from '../config'
 import type { GameCallbacks, HudState } from '../types'
-import { DIG_MAX, World, dirFromLatLon, surfaceRadius } from './world'
+import { DIG_MAX, World, dirFromLatLon, groundRadius, surfaceRadius } from './world'
 import { LadderField } from './ladder'
 import { Player } from './player'
 import { WeaponSystem } from './weapons'
@@ -14,6 +14,7 @@ import { SPAWN_LATLON } from './landmarks'
 
 const SPAWN = dirFromLatLon(SPAWN_LATLON[0], SPAWN_LATLON[1])
 const _v = new THREE.Vector3()
+const _vB = new THREE.Vector3()
 const _right = new THREE.Vector3()
 const _up = new THREE.Vector3()
 const _forward = new THREE.Vector3()
@@ -596,6 +597,7 @@ export class Game {
     const right = new THREE.Vector3().crossVectors(forward, this.camera.up).normalize()
     const up = new THREE.Vector3().crossVectors(right, forward).normalize()
     const groups = this.enemies.hitGroups()
+    const dirt = this.world.digColliders()
     const muzzle = new THREE.Vector3()
     this.weapons.muzzleWorld(this.camera, muzzle)
 
@@ -612,7 +614,7 @@ export class Game {
       this.raycaster.set(origin, direction)
       this.raycaster.far = weapon.range
       const enemyHit = this.raycaster.intersectObjects(groups, true)[0]
-      const planetHit = this.raycaster.intersectObject(this.world.planet, false)[0]
+      const planetHit = this.raycaster.intersectObjects(dirt, false)[0]
       const propHit = this.world.solids.length > 0
         ? this.raycaster.intersectObjects(this.world.solids, true)[0]
         : undefined
@@ -714,15 +716,21 @@ export class Game {
     return new THREE.Vector3().copy(foot).multiplyScalar(surfaceRadius(foot))
   }
 
-  /** Shovel: bite a conical pit out of the planet right under the crosshair. */
+  /**
+   * Shovel: take a bite out of the dirt wherever the crosshair is pointing.
+   * Down, forward into a bank, sideways into the wall of a pit, or straight up
+   * into the roof over your head all work — the bite is a sphere in space, not
+   * a dent in a height field.
+   */
   private digGround(weapon: WeaponConfig) {
     if (!this.running || this.paused || this.ended) return
+    const forward = this.camera.getWorldDirection(_forward)
     const hit = this.groundPoint(Math.max(weapon.range, 7))
     if (!hit) {
-      this.toast('对着地面才能挖', 'bad')
+      this.toast('够不到 · 走近一点', 'bad')
       return
     }
-    const dir = hit.clone().normalize()
+    const dir = _vB.copy(hit).normalize()
     for (const obstacle of this.world.obstacles) {
       if (dir.angleTo(obstacle.dir) * PHYSICS.radius < obstacle.radius + 1.1) {
         this.toast('旁边有东西，挖不动', 'bad')
@@ -730,20 +738,20 @@ export class Game {
       }
     }
     const before = this.world.depthAt(dir)
-    const hole = this.world.dig(dir)
+    const hole = this.world.dig(hit, forward)
     this.audio.dig()
-    this.fx.burst(hit, 16, { colors: ['#B9825C', '#8A5A44', COLORS.lemon], speed: 3.4, size: 0.11, life: 0.55, up: dir })
+    this.fx.burst(hit, 18, { colors: ['#B9825C', '#8A5A44', COLORS.lemon], speed: 3.6, size: 0.11, life: 0.55, up: dir })
     this.fx.ring(hit, dir, COLORS.lemon, 1.5)
     this.shake = Math.min(1, this.shake + 0.12)
-    if (hole.depth >= DIG_MAX) {
-      this.toast('挖到地心啦 · 放个梯子吧', 'gold')
-    } else if (hole.depth >= 2 && hole.depth - before < 1) {
+    if (hole.depth >= DIG_MAX && before < DIG_MAX - 0.05) {
+      this.toast('挖到星球的地板啦 · 再往下就是核心了', 'gold')
+    } else if (hole.depth >= 2 && hole.depth - before < 0.6) {
       this.toast(`已经挖了 ${hole.depth.toFixed(1)} 米 · 记得带梯子`, 'good')
     }
     this.emitHud()
   }
 
-  /** Ladder: drop one at the bottom of whatever pit is under the crosshair. */
+  /** Ladder: drop one where the crosshair points, standing on the real floor. */
   private placeLadder() {
     if (!this.running || this.paused || this.ended) return
     const hit = this.groundPoint(6)
@@ -752,19 +760,19 @@ export class Game {
       return
     }
     const aim = hit.clone().normalize()
-    // Inside a pit, stand the ladder on the floor instead of on the wall.
-    const pit = this.world.pitAt(aim)
-    const foot = pit ? pit.dir : aim
-    const ladder = this.ladders.place(foot)
+    // Feet-relative ground march: in a deep pit or under a tunnel roof the
+    // sky-march only finds the grass, so ask what is below *us* instead.
+    const base = groundRadius(aim, this.player.feet.length() + 0.5)
+    const ladder = this.ladders.place(aim, base)
     if (!ladder) {
       this.toast('这里已经放满了梯子', 'bad')
       return
     }
-    const footPoint = foot.clone().multiplyScalar(ladder.base)
+    const footPoint = aim.clone().multiplyScalar(ladder.base)
     this.audio.placeLadder()
-    this.fx.ring(footPoint, foot, COLORS.lemon, 1.6)
-    this.fx.burst(footPoint, 8, { colors: [COLORS.lemon, COLORS.white], speed: 2.2, size: 0.09, life: 0.4, up: foot })
-    this.toast(pit ? '梯子放好了 · 走进坑里按 W 往上爬' : '梯子放好了 · 走过去按 W 就能爬', 'good')
+    this.fx.ring(footPoint, aim, COLORS.lemon, 1.6)
+    this.fx.burst(footPoint, 8, { colors: [COLORS.lemon, COLORS.white], speed: 2.2, size: 0.09, life: 0.4, up: aim })
+    this.toast('梯子放好了 · 走过去按 W 就能爬', 'good')
   }
 
   private onKill(enemy: Enemy, point: THREE.Vector3, headshot: boolean) {

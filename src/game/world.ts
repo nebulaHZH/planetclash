@@ -15,6 +15,12 @@ const _jitter = new THREE.Vector3()
 const _dig = new THREE.Vector3()
 const _col = new THREE.Color()
 const _aimN = new THREE.Vector3()
+const _f = new THREE.Vector3()
+const _avg = new THREE.Vector3()
+const _vE = new THREE.Vector3()
+const _grad = new THREE.Vector3()
+const SN_A = [0, 2, 4, 6, 0, 1, 4, 5, 0, 1, 2, 3]
+const SN_B = [1, 3, 5, 7, 2, 3, 6, 7, 4, 5, 6, 7]
 const _m = new THREE.Matrix4()
 const _aim = new THREE.Vector3()
 const _hit = new THREE.Vector3()
@@ -46,23 +52,48 @@ export function plainRadius(dir: THREE.Vector3): number {
 
 /* --------------------------------------------------------------- digging */
 
-export type DigHole = {
-  /** Unit direction of the pit centre. */
-  dir: THREE.Vector3
-  /** Cup radius in metres measured along the surface. */
-  radius: number
-  /** How far the floor sits below the untouched surface. */
-  depth: number
+/**
+ * One shovelful is a bite of terrain removed *in three dimensions*. It is not a
+ * dent in a height field: aim at the wall beside you and it carves sideways,
+ * aim at the roof above you and it carves upward, aim at the floor and it
+ * deepens the pit. Everything else (walking surface, spoil, the shell that has
+ * to get out of the way) is derived from these spheres.
+ */
+export type DigScoop = {
+  /** Where the bite is centred, in world space. */
+  c: THREE.Vector3
+  /** How much dirt that bite removed. */
+  r: number
 }
 
-/** One scoop of the shovel, in metres. */
-export const DIG_STEP = 0.62
+export type DigHole = {
+  /** Unit direction of the middle of the excavation. */
+  dir: THREE.Vector3
+  /** Footprint radius in metres, measured along the surface. */
+  radius: number
+  /** How far the deepest cut sits below the untouched surface. */
+  depth: number
+  /** Lowest radius the excavation reaches — the shell is pushed under this. */
+  floor: number
+  /** Cone test: any direction outside this can skip the hole entirely. */
+  cosFar: number
+  /** Bounding box of the bites, already padded for the mesh. */
+  min: THREE.Vector3
+  max: THREE.Vector3
+  /** One entry per shovelful. */
+  scoops: DigScoop[]
+}
+
 /** Past this the planet would be a shell, not a ball. */
 export const DIG_MAX = 11
+/** How much dirt one scoop takes out, in metres of radius. */
+export const SCOOP_R = 1.62
 
 const DIGS: DigHole[] = []
-/** Pits beyond this are forgotten so the analytic surface stays cheap. */
-const DIG_LIMIT = 32
+/** Whole excavations beyond this are forgotten so the field stays cheap. */
+const DIG_LIMIT = 24
+/** Bites per excavation — a long tunnel keeps only its newest stretch. */
+const SCOOPS_PER_HOLE = 34
 
 export function digHoles(): readonly DigHole[] {
   return DIGS
@@ -77,21 +108,70 @@ const smoothstep = (t: number) => {
   return x * x * (3 - 2 * x)
 }
 
-/** Depth removed at `dir` by every pit, deepest wins so overlaps stay flat. */
-export function digDrop(dir: THREE.Vector3): number {
-  let drop = 0
-  for (const hole of DIGS) {
-    if (hole.depth <= drop) continue
-    const dot = THREE.MathUtils.clamp(dir.dot(hole.dir), -1, 1)
-    if (dot < 0.2) continue
-    const arc = Math.acos(dot) * R
-    if (arc >= hole.radius) continue
-    const t = 1 - arc / hole.radius
-    const f = smoothstep((t - 0.08) / 0.42)
-    const d = f * hole.depth
-    if (d > drop) drop = d
+/**
+ * Signed distance to the dirt: positive inside the planet, negative in the air
+ * of a dug cavity. The small `1e-5` shrugs off the exact-centre degenerate case.
+ */
+function fieldAt(x: number, y: number, z: number): number {
+  const len = Math.sqrt(x * x + y * y + z * z)
+  if (len < 1e-4) return R
+  _f.set(x / len, y / len, z / len)
+  // Spoil is dirt too, so a mound counts as solid ground.
+  let s = plainRadius(_f) + (DIGS.length === 0 ? 0 : digMound(_f)) - len
+  for (let h = 0; h < DIGS.length; h++) {
+    const scoops = DIGS[h].scoops
+    for (let i = 0; i < scoops.length; i++) {
+      const sc = scoops[i]
+      const dx = x - sc.c.x
+      const dy = y - sc.c.y
+      const dz = z - sc.c.z
+      const k = Math.sqrt(dx * dx + dy * dy + dz * dz) - sc.r
+      if (k < s) s = k
+    }
   }
-  return drop
+  return s
+}
+
+/** Is this world point inside the dirt? */
+export function isDirt(point: THREE.Vector3): boolean {
+  return fieldAt(point.x, point.y, point.z) > 0
+}
+
+/**
+ * Depth removed along a radial ray. The air column starts at the sky and keeps
+ * lowering while some bite connects to it — so an open shaft counts all the way
+ * to its floor, while a bite that never reaches the column is roofed and leaves
+ * the ground (the top of a tunnel) alone.
+ */
+function dropAlong(dir: THREE.Vector3, plain: number): number {
+  let bottom = plain
+  let changed = true
+  while (changed) {
+    changed = false
+    for (let h = 0; h < DIGS.length; h++) {
+      const hole = DIGS[h]
+      if (dir.dot(hole.dir) < hole.cosFar) continue
+      const scoops = hole.scoops
+      for (let i = 0; i < scoops.length; i++) {
+        const sc = scoops[i]
+        const tc = dir.x * sc.c.x + dir.y * sc.c.y + dir.z * sc.c.z
+        const cc = sc.c.lengthSq() - sc.r * sc.r
+        const disc = tc * tc - cc
+        if (disc <= 0) continue
+        const half = Math.sqrt(disc)
+        const enter = Math.max(0, tc - half)
+        if (enter >= bottom) continue
+        if (tc + half < bottom - 0.02) continue // still roofed, leave the ground alone
+        bottom = enter
+        changed = true
+      }
+    }
+  }
+  return Math.min(plain - bottom, plain - R * 0.45)
+}
+
+export function digDrop(dir: THREE.Vector3): number {
+  return DIGS.length === 0 ? 0 : dropAlong(dir, plainRadius(dir))
 }
 
 /**
@@ -103,54 +183,164 @@ export function digDrop(dir: THREE.Vector3): number {
 const MOUND_MAX = 1.15
 export function digMound(dir: THREE.Vector3): number {
   let rise = 0
-  for (const hole of DIGS) {
-    const dot = THREE.MathUtils.clamp(dir.dot(hole.dir), -1, 1)
-    if (dot < 0.2) continue
-    const k = (Math.acos(dot) * R) / Math.max(0.5, hole.radius)
+  for (let h = 0; h < DIGS.length; h++) {
+    const hole = DIGS[h]
+    if (dir.dot(hole.dir) < hole.cosFar) continue
+    const k = (Math.acos(THREE.MathUtils.clamp(dir.dot(hole.dir), -1, 1)) * R) / Math.max(0.5, hole.radius)
     if (k < 0.84 || k > 2.05) continue
     // Starts inside the lip so the spoil covers it, crests at 1.35, and is back
     // down to grass by 2.3.
     const up = smoothstep((k - 0.84) / 0.26)
     const down = 1 - smoothstep((k - 1.3) / 0.75)
-    const h = up * down * Math.min(MOUND_MAX, hole.depth * 0.17)
-    if (h > rise) rise = h
+    const height = up * down * Math.min(MOUND_MAX, hole.depth * 0.17)
+    if (height > rise) rise = height
   }
   return rise
 }
 
 /** Analytic walking surface — the same function used to displace the mesh. */
 export function surfaceRadius(dir: THREE.Vector3): number {
+  if (DIGS.length === 0) return plainRadius(dir)
   const base = plainRadius(dir)
-  return DIGS.length === 0 ? base : base - digDrop(dir) + digMound(dir)
+  return base - dropAlong(dir, base) + digMound(dir)
 }
 
 /**
- * Shovel at `dir`. Returns the pit that now owns that spot, so the world can
- * resculpt the mesh around it.
+ * Top of the dirt under a point at radius `from`, marching the same field the
+ * meshes use — so the floor of a roofed tunnel counts even though the height
+ * field still says "grass" there. `dir` must be unit length. Returns `from`
+ * itself when the point already sits inside dirt.
  */
-export function digAt(dir: THREE.Vector3): DigHole {
-  const target = dir.clone().normalize()
-  // Grow the crater you are already standing in. Stamping a second bowl on top
-  // of the first leaves a lumpy double-rim that reads as a bug, not a hole.
+export function groundRadius(dir: THREE.Vector3, from: number): number {
+  if (DIGS.length === 0) return surfaceRadius(dir)
+  const top = Math.min(from, plainRadius(dir) + 2)
+  if (fieldAt(dir.x * top, dir.y * top, dir.z * top) > 0) return top
+  let prev = top
+  for (let r = top - 0.3; r > R * 0.45; r -= 0.3) {
+    if (fieldAt(dir.x * r, dir.y * r, dir.z * r) > 0) {
+      let lo = r
+      let hi = prev
+      for (let k = 0; k < 9; k++) {
+        const mid = (lo + hi) * 0.5
+        if (fieldAt(dir.x * mid, dir.y * mid, dir.z * mid) > 0) lo = mid
+        else hi = mid
+      }
+      return hi
+    }
+    prev = r
+  }
+  return surfaceRadius(dir)
+}
+
+/**
+ * Push a world point out of dug dirt along the field gradient — the bit that
+ * keeps a tunnel a tunnel: the height field only knows "down", walls live here.
+ * Returns false when the point is already in open air.
+ */
+export function dirtPush(point: THREE.Vector3, out: THREE.Vector3): boolean {
+  const f = fieldAt(point.x, point.y, point.z)
+  if (f <= 0.03) return false
+  const e = 0.09
+  const gx = fieldAt(point.x + e, point.y, point.z) - fieldAt(point.x - e, point.y, point.z)
+  const gy = fieldAt(point.x, point.y + e, point.z) - fieldAt(point.x, point.y - e, point.z)
+  const gz = fieldAt(point.x, point.y, point.z + e) - fieldAt(point.x, point.y, point.z - e)
+  const l = Math.sqrt(gx * gx + gy * gy + gz * gz)
+  if (l < 1e-5) return false
+  const d = Math.min(f, 0.25)
+  out.set((-gx / l) * d, (-gy / l) * d, (-gz / l) * d)
+  return true
+}
+
+/** Recompute the summary numbers a hole is described by. */
+function refresh(hole: DigHole) {
+  const scoops = hole.scoops
+  _avg.set(0, 0, 0)
+  hole.min.set(Infinity, Infinity, Infinity)
+  hole.max.set(-Infinity, -Infinity, -Infinity)
+  let floor = Infinity
+  for (let i = 0; i < scoops.length; i++) {
+    const sc = scoops[i]
+    _avg.add(sc.c)
+    if (sc.c.length() - sc.r < floor) floor = sc.c.length() - sc.r
+    hole.min.min(_vE.copy(sc.c).subScalar(sc.r))
+    hole.max.max(_vE.copy(sc.c).addScalar(sc.r))
+  }
+  _avg.divideScalar(scoops.length)
+  hole.dir.copy(_avg).normalize()
+  hole.floor = floor
+  const plain = plainRadius(hole.dir)
+  let arc = SCOOP_R
+  for (let i = 0; i < scoops.length; i++) {
+    const sc = scoops[i]
+    const a = hole.dir.angleTo(_vE.copy(sc.c).normalize()) * R + sc.r
+    if (a > arc) arc = a
+  }
+  hole.radius = Math.min(8.5, arc)
+  hole.depth = Math.max(0, Math.min(DIG_MAX, plain - floor))
+  hole.cosFar = Math.cos(Math.min(Math.PI, (hole.radius * 1.35 + 1.4) / R))
+}
+
+/**
+ * Shovel at a world point, swinging along `aim`. Returns the excavation that
+ * now owns the spot so the world can resculpt around it.
+ *
+ * The bite is centred just short of the surface along the swing: each sphere
+ * still overlaps the last bite, but only sinks ~1.3m per swing, so a shaft is
+ * dug swing by swing instead of swallowing you in two.
+ */
+export function digAt(point: THREE.Vector3, aim: THREE.Vector3): DigHole {
+  const centre = _vE.copy(point).addScaledVector(aim, SCOOP_R * -0.22).clone()
+  // The core is off limits: no bite may remove dirt deeper than DIG_MAX below
+  // the local surface. Rides the centre up until the sphere bottoms out right
+  // on the boundary, so deep digging turns sideways instead of down.
+  _f.copy(centre).normalize()
+  const minLen = plainRadius(_f) - DIG_MAX + SCOOP_R
+  if (centre.length() < minLen) centre.copy(_f).multiplyScalar(minLen)
   let host: DigHole | null = null
-  let bestArc = Infinity
-  for (const hole of DIGS) {
-    const arc = hole.dir.angleTo(target) * R
-    if (arc > hole.radius * 1.05 || arc >= bestArc) continue
-    bestArc = arc
-    host = hole
+  let best = 2.2
+  for (let h = 0; h < DIGS.length; h++) {
+    const hole = DIGS[h]
+    let near = Infinity
+    for (let i = 0; i < hole.scoops.length; i++) {
+      const sc = hole.scoops[i]
+      const d = centre.distanceTo(sc.c) - sc.r - SCOOP_R
+      if (d < near) near = d
+    }
+    if (near < best) {
+      best = near
+      host = hole
+    }
   }
-  if (host) {
-    host.dir.lerp(target, 0.22).normalize()
-    host.depth = Math.min(DIG_MAX, Math.max(host.depth, digDrop(target)) + DIG_STEP)
-    host.radius = Math.min(5.2, 1.7 + host.depth * 0.26)
-    return host
+  if (!host) {
+    host = {
+      dir: centre.clone().normalize(),
+      radius: SCOOP_R,
+      depth: 0,
+      floor: R,
+      cosFar: 1,
+      min: new THREE.Vector3(),
+      max: new THREE.Vector3(),
+      scoops: [],
+    }
+    DIGS.push(host)
+    while (DIGS.length > DIG_LIMIT) DIGS.shift()
   }
-  const depth = Math.min(DIG_MAX, digDrop(target) + DIG_STEP)
-  const hole: DigHole = { dir: target, radius: Math.min(5.2, 1.7 + depth * 0.26), depth }
-  DIGS.push(hole)
-  while (DIGS.length > DIG_LIMIT) DIGS.shift()
-  return hole
+  host.scoops.push({ c: centre, r: SCOOP_R })
+  while (host.scoops.length > SCOOPS_PER_HOLE) host.scoops.shift()
+  refresh(host)
+  return host
+}
+
+/**
+ * Is a world point inside a hole's bounding box? Cheap reject for the mesh
+ * builders, which ask this thousands of times per scoop.
+ */
+function inBox(hole: DigHole, p: THREE.Vector3, pad: number): boolean {
+  return (
+    p.x > hole.min.x - pad && p.x < hole.max.x + pad &&
+    p.y > hole.min.y - pad && p.y < hole.max.y + pad &&
+    p.z > hole.min.z - pad && p.z < hole.max.z + pad
+  )
 }
 
 /** Analytic surface normal, so props stand flat on hills instead of the radial. */
@@ -714,14 +904,9 @@ export class World {
 
   /* ------------------------------------------------------------ digging */
 
-  /** The pit whose floor contains `dir`, deepest first. */
-  pitAt(dir: THREE.Vector3): DigHole | null {
-    let best: DigHole | null = null
-    for (const hole of digHoles()) {
-      if (dir.angleTo(hole.dir) * R > hole.radius * 0.92) continue
-      if (!best || hole.depth > best.depth) best = hole
-    }
-    return best
+  /** Shootable dirt: the coarse planet plus every patch that lines a dig. */
+  digColliders(): THREE.Object3D[] {
+    return this.pits.length === 0 ? [this.planet] : [this.planet, ...this.pits.map((pit) => pit.mesh)]
   }
 
   /** How much dirt sits in the pit at `dir` (0 = untouched grass). */
@@ -730,12 +915,12 @@ export class World {
   }
 
   /**
-   * Shovel one scoop at `dir`. The coarse sphere shell is pushed under the pit
-   * and a high-res patch is laid on the analytic surface, so the hole keeps the
-   * toy-clean low-poly look of the planet while still being metres deep.
+   * Shovel one scoop at a world point, swinging along `aim`. The coarse sphere
+   * shell is pushed out of the way and a surface-nets patch is laid over the
+   * bitten field, so the cavity can have a roof and a wall, not just a floor.
    */
-  dig(dir: THREE.Vector3): { depth: number; radius: number } {
-    const hole = digAt(dir)
+  dig(point: THREE.Vector3, aim: THREE.Vector3): { depth: number; radius: number } {
+    const hole = digAt(point, aim)
     this.sinkGround(hole)
     this.dropDetail(hole)
     this.pits = this.pits.filter((pit) => {
@@ -750,10 +935,10 @@ export class World {
   }
 
   /**
-   * Flatten the coarse shell under the pit footprint. It is a fixed-detail
-   * icosahedron, so it cannot follow a 5 m bowl: its long chords would rise
-   * back up through the liner. Instead every vertex inside the liner gets
-   * pushed well below the deepest point, and the liner alone is visible.
+   * Get the coarse shell out from under the cavity. It is a fixed-detail
+   * icosahedron, so it cannot follow a bite: inside the core of the excavation
+   * its vertices are dropped to the deepest point, and across the apron they
+   * only duck far enough that the patch wins the depth test.
    */
   private sinkGround(hole: DigHole) {
     const geo = this.planet.geometry
@@ -761,17 +946,20 @@ export class World {
     const arr = pos.array as Float32Array
     const dirs = this.groundDirs
     if (dirs.length !== pos.count * 3) return
-    const cos = Math.cos((hole.radius * 1.45 + 0.6) / R)
-    const floor = surfaceRadius(hole.dir) - 1.1
-    const { x: hx, y: hy, z: hz } = hole.dir
+    const deep = Math.max(R * 0.45, hole.floor - 1.0)
     let touched = false
     for (let i = 0, n = pos.count; i < n; i++) {
       const x = dirs[i * 3]
       const y = dirs[i * 3 + 1]
       const z = dirs[i * 3 + 2]
-      if (x * hx + y * hy + z * hz < cos) continue
       _dig.set(x, y, z)
-      const r = Math.min(surfaceRadius(_dig) - 0.8, floor)
+      _vA.copy(_dig).multiplyScalar(plainRadius(_dig))
+      if (!inBox(hole, _vA, 1.2)) continue
+      const cur = arr[i * 3] * x + arr[i * 3 + 1] * y + arr[i * 3 + 2] * z
+      let target: number
+      if (inBox(hole, _vA, 0.5)) target = deep
+      else target = Math.max(deep, surfaceRadius(_dig) - 0.55)
+      const r = Math.min(cur, target)
       arr[i * 3] = x * r
       arr[i * 3 + 1] = y * r
       arr[i * 3 + 2] = z * r
@@ -782,14 +970,22 @@ export class World {
 
   /** Grass, flowers and pebbles that were standing where the pit now is. */
   private dropDetail(hole: DigHole) {
-    const cos = Math.cos((hole.radius * 1.05) / R)
-    const { x: hx, y: hy, z: hz } = hole.dir
-    const zero = _dig.set(0, 0, 0)
+    const scoops = hole.scoops
     for (const entry of this.detail) {
       let touched = false
       for (let i = 0; i < entry.used; i++) {
-        if (entry.dirs[i * 3] * hx + entry.dirs[i * 3 + 1] * hy + entry.dirs[i * 3 + 2] * hz < cos) continue
-        entry.mesh.setMatrixAt(i, _m.makeScale(0, 0, 0).setPosition(zero))
+        const r = plainRadius(_dig.set(entry.dirs[i * 3], entry.dirs[i * 3 + 1], entry.dirs[i * 3 + 2]))
+        _vA.copy(_dig).multiplyScalar(r)
+        if (!inBox(hole, _vA, 0.4)) continue
+        let inside = false
+        for (let s = 0; s < scoops.length; s++) {
+          if (_vA.distanceTo(scoops[s].c) < scoops[s].r - 0.02) {
+            inside = true
+            break
+          }
+        }
+        if (!inside) continue
+        entry.mesh.setMatrixAt(i, _m.makeScale(0, 0, 0).setPosition(_vE.set(0, 0, 0)))
         touched = true
       }
       if (touched) entry.mesh.instanceMatrix.needsUpdate = true
@@ -811,103 +1007,210 @@ export class World {
   }
 
   /**
-   * The planet shell is a fixed-detail icosahedron, so a deep scoop is drawn as
-   * its own patch riding just above it. Normals come straight from the analytic
-   * height field: the mesh is far too coarse around the wall for
-   * `computeVertexNormals` to read as a bowl.
+   * The planet shell is a fixed-detail icosahedron and the cavity is not a
+   * height field — it can have a roof — so the patch that lines a hole is a
+   * surface-nets iso-surface of the very field the aim probe and the shell
+   * agree on. Sampling a cell grid (rather than a radial fan) is what lets the
+   * shovel work upward and sideways: a cavity that turns a corner is just
+   * another shape in the same field.
    */
   private buildPitMesh(hole: DigHole, lift: number) {
-    const rings = 30
-    const segs = 56
-    // Must reach past the spoil ring, or the mound's outer skirt is drawn by the
-    // coarse shell and cuts a hard circle into the grass.
-    const outer = Math.min(R * 0.5, hole.radius * 2.1 + 0.15)
-    const inner = hole.radius * 0.5
-    const rim = hole.radius
-    const up = hole.dir
-    const e1 = new THREE.Vector3().crossVectors(up, Math.abs(up.y) > 0.9 ? X : Y).normalize()
-    const e2 = new THREE.Vector3().crossVectors(up, e1).normalize()
-    // Rings: a few across the flat floor, most of them down the wall, a few on
-    // the apron that hides the shell's coarse chord.
-    const arcAt = (t: number) => {
-      if (t < 0.12) return (t / 0.12) * inner
-      if (t < 0.58) return inner + ((t - 0.12) / 0.46) * (rim - inner)
-      return rim + ((t - 0.58) / 0.42) * (outer - rim)
-    }
-    const count = (rings + 1) * segs
-    const pos = new Float32Array(count * 3)
-    const col = new Float32Array(count * 3)
-    const nrm = new Float32Array(count * 3)
-    const dir = new THREE.Vector3()
-    const q1 = new THREE.Vector3()
-    const q2 = new THREE.Vector3()
-    const q3 = new THREE.Vector3()
-    const q4 = new THREE.Vector3()
-    const eps = 0.35 / R
-    for (let i = 0; i <= rings; i++) {
-      const arc = arcAt(i / rings)
-      const sin = Math.sin(arc / R)
-      const cos = Math.cos(arc / R)
-      for (let j = 0; j < segs; j++) {
-        const a = (j / segs) * Math.PI * 2
-        dir.copy(up).multiplyScalar(cos)
-          .addScaledVector(e1, Math.sin(a) * sin)
-          .addScaledVector(e2, Math.cos(a) * sin)
-          .normalize()
-        const k = (i * segs + j) * 3
-        const r = surfaceRadius(dir) + lift
-        pos[k] = dir.x * r
-        pos[k + 1] = dir.y * r
-        pos[k + 2] = dir.z * r
-        const s1 = (surfaceRadius(q1.copy(dir).addScaledVector(e1, eps).normalize())
-          - surfaceRadius(q2.copy(dir).addScaledVector(e1, -eps).normalize())) / (2 * eps * R)
-        const s2 = (surfaceRadius(q3.copy(dir).addScaledVector(e2, eps).normalize())
-          - surfaceRadius(q4.copy(dir).addScaledVector(e2, -eps).normalize())) / (2 * eps * R)
-        _vA.copy(dir).addScaledVector(e1, -s1).addScaledVector(e2, -s2).normalize()
-        nrm[k] = _vA.x
-        nrm[k + 1] = _vA.y
-        nrm[k + 2] = _vA.z
-        const drop = digDrop(dir)
-        // Spoil is soil too, so the mound darkens by its own height, not by the
-        // depth of the hole it came out of.
-        const dirt = Math.max(drop / 0.4, smoothstep(digMound(dir) / 0.3))
-        zoneColor(dir, _col)
-        _col.lerp(SOIL, Math.min(1, dirt))
-        _col.lerp(SOIL_DEEP, THREE.MathUtils.clamp(drop / (DIG_MAX * 1.4), 0, 0.55))
-        col[k] = _col.r
-        col[k + 1] = _col.g
-        col[k + 2] = _col.b
+    const pad = 2.1
+    const lo = _vA.copy(hole.min).subScalar(pad)
+    const hi = _vB.copy(hole.max).addScalar(pad)
+    let res = 0.26
+    const span = Math.max(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z)
+    if (span / res > 40) res = span / 40
+    const nx = Math.ceil((hi.x - lo.x) / res) + 1
+    const ny = Math.ceil((hi.y - lo.y) / res) + 1
+    const nz = Math.ceil((hi.z - lo.z) / res) + 1
+    const nxny = nx * ny
+    const grid = new Float32Array(nx * ny * nz)
+    for (let k = 0; k < nz; k++) {
+      const z = lo.z + k * res
+      for (let j = 0; j < ny; j++) {
+        const y = lo.y + j * res
+        for (let i = 0; i < nx; i++) {
+          grid[i + j * nx + k * nxny] = fieldAt(lo.x + i * res, y, z)
+        }
       }
     }
+
+    // One vertex per mixed-sign cell, sitting on the average of its edge
+    // crossings. That is the whole of surface nets, and it is table-free.
+    const cnx = nx - 1
+    const cny = ny - 1
+    const cnz = nz - 1
+    const cnxny = cnx * cny
+    const cellV = new Int32Array(cnx * cny * cnz).fill(-1)
+    const vpos: number[] = []
+    const corner = new Float32Array(8)
+    for (let k = 0; k < cnz; k++) {
+      for (let j = 0; j < cny; j++) {
+        for (let i = 0; i < cnx; i++) {
+          let mask = 0
+          for (let c = 0; c < 8; c++) {
+            const v = grid[(i + (c & 1)) + (j + ((c >> 1) & 1)) * nx + (k + ((c >> 2) & 1)) * nxny]
+            corner[c] = v
+            if (v > 0) mask |= 1 << c
+          }
+          if (mask === 0 || mask === 255) continue
+          let sx = 0
+          let sy = 0
+          let sz = 0
+          let hits = 0
+          for (let e = 0; e < 12; e++) {
+            const a = SN_A[e]
+            const b = SN_B[e]
+            const va = corner[a]
+            const vb = corner[b]
+            if (va > 0 === vb > 0) continue
+            const t = va / (va - vb)
+            sx += (a & 1) + ((b & 1) - (a & 1)) * t
+            sy += ((a >> 1) & 1) + (((b >> 1) & 1) - ((a >> 1) & 1)) * t
+            sz += ((a >> 2) & 1) + (((b >> 2) & 1) - ((a >> 2) & 1)) * t
+            hits++
+          }
+          cellV[i + j * cnx + k * cnxny] = vpos.length / 3
+          vpos.push(
+            lo.x + (i + sx / hits) * res,
+            lo.y + (j + sy / hits) * res,
+            lo.z + (k + sz / hits) * res,
+          )
+        }
+      }
+    }
+    if (vpos.length === 0) {
+      const empty = new THREE.BufferGeometry()
+      const blank = new THREE.Mesh(empty, this.pitMaterial())
+      blank.name = 'pit'
+      return blank
+    }
+
     const index: number[] = []
-    for (let i = 0; i < rings; i++) {
-      for (let j = 0; j < segs; j++) {
-        const a = i * segs + j
-        const b = i * segs + ((j + 1) % segs)
-        const c = (i + 1) * segs + j
-        const d = (i + 1) * segs + ((j + 1) % segs)
-        index.push(a, c, b, b, c, d)
+    const quad = (a: number, b: number, c: number, d: number, flip: boolean) => {
+      if (a < 0 || b < 0 || c < 0 || d < 0) return
+      if (flip) index.push(a, c, b, a, d, c)
+      else index.push(a, b, c, a, c, d)
+    }
+    const at = (i: number, j: number, k: number) => grid[i + j * nx + k * nxny] > 0
+    for (let k = 0; k < nz; k++) {
+      for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+          const here = at(i, j, k)
+          // x edge: the four cells around it share the x index
+          if (i < cnx && j > 0 && j < cny && k > 0 && k < cnz && here !== at(i + 1, j, k)) {
+            quad(
+              cellV[i + (j - 1) * cnx + (k - 1) * cnxny],
+              cellV[i + j * cnx + (k - 1) * cnxny],
+              cellV[i + j * cnx + k * cnxny],
+              cellV[i + (j - 1) * cnx + k * cnxny],
+              here,
+            )
+          }
+          // y edge
+          if (j < cny && i > 0 && i < cnx && k > 0 && k < cnz && here !== at(i, j + 1, k)) {
+            quad(
+              cellV[i - 1 + j * cnx + (k - 1) * cnxny],
+              cellV[i - 1 + j * cnx + k * cnxny],
+              cellV[i + j * cnx + k * cnxny],
+              cellV[i + j * cnx + (k - 1) * cnxny],
+              here,
+            )
+          }
+          // z edge
+          if (k < cnz && i > 0 && i < cnx && j > 0 && j < cny && here !== at(i, j, k + 1)) {
+            quad(
+              cellV[i - 1 + (j - 1) * cnx + k * cnxny],
+              cellV[i + (j - 1) * cnx + k * cnxny],
+              cellV[i + j * cnx + k * cnxny],
+              cellV[i - 1 + j * cnx + k * cnxny],
+              here,
+            )
+          }
+        }
       }
     }
+    if (index.length === 0) {
+      const blank = new THREE.BufferGeometry()
+      const mesh = new THREE.Mesh(blank, this.pitMaterial())
+      mesh.name = 'pit'
+      return mesh
+    }
+
+    const count = vpos.length / 3
+    const pos = new Float32Array(vpos)
+    // Lift the patch a hair along the field so it wins the depth test against
+    // the terrain it is duplicating at the rim, then push it out along its own
+    // normal once the normals exist.
+    const nrm = new Float32Array(count * 3)
+    for (let t = 0; t < index.length; t += 3) {
+      const a = index[t] * 3
+      const b = index[t + 1] * 3
+      const c = index[t + 2] * 3
+      _vC.set(pos[b] - pos[a], pos[b + 1] - pos[a + 1], pos[b + 2] - pos[a + 2])
+      _vD.set(pos[c] - pos[a], pos[c + 1] - pos[a + 1], pos[c + 2] - pos[a + 2])
+      _vC.cross(_vD)
+      for (const v of [a, b, c]) {
+        nrm[v] += _vC.x
+        nrm[v + 1] += _vC.y
+        nrm[v + 2] += _vC.z
+      }
+    }
+    for (let i = 0; i < count; i++) {
+      _vC.fromArray(nrm, i * 3)
+      const l = _vC.length() || 1
+      nrm[i * 3] = _vC.x / l
+      nrm[i * 3 + 1] = _vC.y / l
+      nrm[i * 3 + 2] = _vC.z / l
+    }
+
+    // Which way round is "out"? The field is positive inside the dirt, so the
+    // visible face of the cavity points down the gradient. Vote over a handful
+    // of triangles instead of trusting the quad order.
+    let votes = 0
+    for (let t = 0; t < index.length && t < 90; t += 9) {
+      const a = index[t] * 3
+      _vC.fromArray(pos, a)
+      _vC.add(_vE.fromArray(pos, index[t + 1] * 3)).add(_vE.fromArray(pos, index[t + 2] * 3)).divideScalar(3)
+      const e = res * 0.5
+      const gx = fieldAt(_vC.x + e, _vC.y, _vC.z) - fieldAt(_vC.x - e, _vC.y, _vC.z)
+      const gy = fieldAt(_vC.x, _vC.y + e, _vC.z) - fieldAt(_vC.x, _vC.y - e, _vC.z)
+      const gz = fieldAt(_vC.x, _vC.y, _vC.z + e) - fieldAt(_vC.x, _vC.y, _vC.z - e)
+      votes += nrm[a] * gx + nrm[a + 1] * gy + nrm[a + 2] * gz > 0 ? 1 : -1
+    }
+    if (votes > 0) {
+      for (let t = 0; t < index.length; t += 3) {
+        const tmp = index[t + 1]
+        index[t + 1] = index[t + 2]
+        index[t + 2] = tmp
+      }
+      for (let i = 0; i < nrm.length; i++) nrm[i] = -nrm[i]
+    }
+
+    const col = new Float32Array(count * 3)
+    for (let i = 0; i < count; i++) {
+      _vC.fromArray(pos, i * 3)
+      const len = _vC.length() || 1
+      _vD.copy(_vC).divideScalar(len)
+      const plain = plainRadius(_vD)
+      const below = plain - len
+      zoneColor(_vD, _col)
+      _col.lerp(SOIL, Math.min(1, smoothstep(below / 0.24)))
+      _col.lerp(SOIL_DEEP, THREE.MathUtils.clamp(below / (DIG_MAX * 1.3), 0, 0.55))
+      col[i * 3] = _col.r
+      col[i * 3 + 1] = _col.g
+      col[i * 3 + 2] = _col.b
+      pos[i * 3] += nrm[i * 3] * lift
+      pos[i * 3 + 1] += nrm[i * 3 + 1] * lift
+      pos[i * 3 + 2] += nrm[i * 3 + 2] * lift
+    }
+
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
     geo.setAttribute('color', new THREE.BufferAttribute(col, 3))
     geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3))
     geo.setIndex(index)
-    // Winding: test the first triangle on the flat floor against its analytic
-    // normal (the ring-0 fan is degenerate, so start further out).
-    const t0 = (rings >> 1) * segs
-    _vB.fromArray(pos, t0 * 3)
-    _vC.subVectors(_vC.fromArray(pos, (t0 + segs) * 3), _vB)
-    _vD.subVectors(_vD.fromArray(pos, (t0 + 1) * 3), _vB)
-    if (_vC.cross(_vD).dot(_vA.fromArray(nrm, t0 * 3)) < 0) {
-      for (let i = 0; i < index.length; i += 3) {
-        const tmp = index[i + 1]
-        index[i + 1] = index[i + 2]
-        index[i + 2] = tmp
-      }
-      geo.setIndex(index)
-    }
     const mesh = new THREE.Mesh(geo, this.pitMaterial())
     mesh.name = 'pit'
     mesh.receiveShadow = true
@@ -948,18 +1251,17 @@ export class World {
     geo.computeBoundingSphere()
   }
 
-  /** Where the crosshair meets the ground, for digging and ladder placement. */
+  /** Where the crosshair meets the dirt, for digging and ladder placement. */
   aimGround(origin: THREE.Vector3, forward: THREE.Vector3, maxDist: number): THREE.Vector3 | null {
-    // `surfaceRadius` takes a unit direction, so every sample is normalised
-    // first — an un-normalised probe reads as "dead centre of the pit" and the
-    // whole march silently misses.
+    // The volumetric field, not the radial surface: a cavity with a roof can
+    // only be found by asking what is dirt, and a radial probe would sail
+    // straight through the roof of a tunnel.
     const blocked = (t: number) => {
       _aim.copy(origin).addScaledVector(forward, t)
-      const len = _aim.length() || 1
-      return len <= surfaceRadius(_aimN.copy(_aim).divideScalar(len)) ? len : 0
+      return fieldAt(_aim.x, _aim.y, _aim.z) > 0
     }
-    let prev = 0
-    for (let t = 0.35; t <= maxDist; t += 0.3) {
+    let prev = 0.1
+    for (let t = 0.3; t <= maxDist; t += 0.28) {
       if (blocked(t)) {
         let lo = prev
         let hi = t
@@ -968,8 +1270,7 @@ export class World {
           if (blocked(mid)) hi = mid
           else lo = mid
         }
-        _aim.copy(origin).addScaledVector(forward, hi)
-        return _hit.copy(_aim)
+        return _hit.copy(_aim.copy(origin).addScaledVector(forward, hi))
       }
       prev = t
     }
