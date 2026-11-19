@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { CHARACTERS, COLORS, GAME, PHYSICS, type CharacterConfig, type WeaponConfig } from '../config'
 import type { GameCallbacks, HudState } from '../types'
-import { DIG_MAX, World, dirFromLatLon, groundRadius, surfaceRadius } from './world'
+import { DIG_MAX, World, dirFromLatLon, groundRadius, isDirt, surfaceRadius } from './world'
 import { LadderField } from './ladder'
 import { Player } from './player'
 import { WeaponSystem } from './weapons'
@@ -547,12 +547,19 @@ export class Game {
     const lean = THREE.MathUtils.clamp(p.moveVel.dot(_right) / PHYSICS.walkSpeed, -1, 1)
 
     this.camera.position.copy(p.feet)
-    this.camera.position.addScaledVector(up, PHYSICS.eyeHeight + bobY - p.landDip * 0.7)
+    this.camera.position.addScaledVector(up, PHYSICS.eyeHeight + bobY - p.landDip * 0.7 - p.duck)
     this.camera.position.addScaledVector(_right, bobX)
     if (this.shake > 0.001) {
       const s = this.shake * 0.14
       this.camera.position.addScaledVector(_right, (Math.random() - 0.5) * s)
       this.camera.position.addScaledVector(_up, (Math.random() - 0.5) * s)
+    }
+    // Last resort inside tunnels: never render from inside the dirt — the
+    // camera always gives way toward the feet before the frame is drawn.
+    if (!p.climbing) {
+      for (let i = 0; i < 6 && isDirt(this.camera.position); i++) {
+        this.camera.position.addScaledVector(_up, -0.2)
+      }
     }
 
     _matrix.makeBasis(_right, _up, _v.copy(_forward).negate())

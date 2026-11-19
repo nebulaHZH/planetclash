@@ -32,6 +32,8 @@ export class Player {
   velY = 0
   grounded = true
   alive = true
+  /** Camera duck under low tunnel roofs — how much the eye lowers itself. */
+  duck = 0
   health = 3
   maxHealth = 3
   speedMult = 1
@@ -68,6 +70,7 @@ export class Player {
     this.velY = 0
     this.grounded = true
     this.alive = true
+    this.duck = 0
     this.maxHealth = maxHealth
     this.health = maxHealth
     this.speedMult = speedMult
@@ -238,7 +241,7 @@ export class Player {
       // Bonk: rising into the roof of a tunnel stops the jump instead of
       // poking through into the dirt.
       if (this.velY > 0) {
-        _head.copy(this.dir).multiplyScalar(surf + this.alt + PHYSICS.eyeHeight)
+        _head.copy(this.dir).multiplyScalar(surf + this.alt + PHYSICS.eyeHeight - this.duck)
         if (isDirt(_head)) {
           this.alt -= this.velY * dt
           this.velY = 0
@@ -261,8 +264,9 @@ export class Player {
     }
 
     this.coyote = this.grounded ? 0.12 : Math.max(0, this.coyote - dt)
+    this.duck = Math.max(0, this.duck - dt * 1.5)
     this.collide()
-    this.dirtPush()
+    this.dirtPush(dt)
 
     this.landDip += (0 - this.landDip) * Math.min(1, dt * 11)
 
@@ -283,6 +287,7 @@ export class Player {
     this.moveVel.set(0, 0, 0)
     this.moving = false
     this.speedNorm = 0
+    this.duck = 0
     this.heading.addScaledVector(this.dir, -this.heading.dot(this.dir))
     if (this.heading.lengthSq() < 1e-6) this.heading.set(1, 0, 0).projectOnPlane(this.dir)
     this.heading.normalize()
@@ -348,15 +353,26 @@ export class Player {
     }
   }
 
-  /** Tunnel walls: the field gradient nudges the body back into the cavity. */
-  private dirtPush() {
-    _knee.copy(this.dir).multiplyScalar(Math.max(4, this.surface + this.alt) + 0.55)
-    if (!dirtPush(_knee, _push)) return
-    _push.addScaledVector(this.dir, -_push.dot(this.dir))
-    if (_push.lengthSq() < 1e-8) return
-    this.dir.addScaledVector(_push, 1 / Math.max(4, this.surface + this.alt)).normalize()
-    this.heading.addScaledVector(this.dir, -this.heading.dot(this.dir))
-    if (this.heading.lengthSq() < 1e-6) this.heading.set(1, 0, 0).projectOnPlane(this.dir)
-    this.heading.normalize()
+  /**
+   * The field itself pushes back inside a tunnel: walls at knee height steer
+   * the body sideways (and lift it free if a fall embedded it), while dirt at
+   * head height ducks the camera instead of clipping through the roof.
+   */
+  private dirtPush(dt: number) {
+    const r = Math.max(4, this.surface + this.alt)
+    _knee.copy(this.dir).multiplyScalar(r + 0.55)
+    if (dirtPush(_knee, _push)) {
+      const radial = _push.dot(this.dir)
+      if (radial > 0) this.alt += Math.min(radial, 0.2)
+      _push.addScaledVector(this.dir, -radial)
+      if (_push.lengthSq() > 1e-8) {
+        this.dir.addScaledVector(_push, 1 / Math.max(4, this.surface + this.alt)).normalize()
+        this.heading.addScaledVector(this.dir, -this.heading.dot(this.dir))
+        if (this.heading.lengthSq() < 1e-6) this.heading.set(1, 0, 0).projectOnPlane(this.dir)
+        this.heading.normalize()
+      }
+    }
+    _head.copy(this.dir).multiplyScalar(r + PHYSICS.eyeHeight - this.duck)
+    if (isDirt(_head)) this.duck = Math.min(0.9, this.duck + dt * 3.5)
   }
 }
