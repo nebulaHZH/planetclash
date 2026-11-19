@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { buildUsagiAsset, type UsagiAsset } from './usagi'
+import { buildNailongAsset } from './nailong'
 
 /** KayKit Rig_Medium animation packs we ship. All share the same 23-bone skeleton. */
 const ANIM_PACKS = ['General', 'MovementBasic', 'CombatRanged', 'MovementAdvanced'] as const
@@ -48,11 +49,12 @@ export function loadGameAssets() {
 }
 
 async function load(): Promise<GameAssets> {
-  const [charGltfs, animGltfs, gunGltfs, usagi] = await Promise.all([
+  const [charGltfs, animGltfs, gunGltfs, usagi, nailong] = await Promise.all([
     Promise.all(CHARACTER_MODELS.map((name) => loader.loadAsync(`/assets/chars/${name}.glb`))),
     Promise.all(ANIM_PACKS.map((name) => loader.loadAsync(`/assets/anim/Rig_Medium_${name}.glb`))),
     Promise.all(GUN_MODELS.map((gun) => loader.loadAsync(`/assets/guns/${gun.name}.glb`))),
     loader.loadAsync('/assets/chars/usagi/usagi.glb'),
+    loader.loadAsync('/assets/chars/nailong/model.glb'),
   ])
 
   const characters = new Map<string, THREE.Group>()
@@ -76,8 +78,16 @@ async function load(): Promise<GameAssets> {
   for (const gltf of animGltfs) clips.push(...gltf.animations)
 
   const guns = gunGltfs.map((gltf, i) => normalizeGun(gltf.scene, 0.5, GUN_MODELS[i].flip, GUN_MODELS[i].axis, GUN_MODELS[i].tint, GUN_MODELS[i].grip))
-  const sculpts = new Map<string, UsagiAsset>([['Usagi', buildUsagiAsset(usagi.scene)]])
+  const sculpts = new Map<string, UsagiAsset>([
+    ['Usagi', buildUsagiAsset(usagi.scene)],
+    ['Nailong', buildNailongAsset(nailong.scene)],
+  ])
   return { characters, clips, guns, sculpts }
+}
+
+/** Every hand-held enemy gun is scaled to this length so chibis carry proportional toys. */
+export function heldGunScale(gun: GunAsset, length = 0.4) {
+  return length / Math.max(0.06, gun.tip * 2)
 }
 
 /** Chunkier guns get capped here so they never fill the screen. */

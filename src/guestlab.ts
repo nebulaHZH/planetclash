@@ -1,8 +1,7 @@
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { CHARACTERS, COLORS } from './config'
+import { loadGameAssets } from './game/assets'
 import { ToonRig } from './game/toonrig'
-import { buildUsagiAsset } from './game/usagi'
 
 /** Look-dev page for the procedural guest mascots: /guests.html */
 const renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -45,23 +44,15 @@ ground.rotation.x = -Math.PI / 2
 ground.receiveShadow = true
 scene.add(ground)
 
-const loader = new GLTFLoader()
 const rigs: ToonRig[] = []
 const guests = CHARACTERS.filter((c) => c.guest)
 
 async function main() {
-  const [gunGltf, usagiGltf] = await Promise.all([
-    loader.loadAsync('/assets/guns/blaster-d.glb'),
-    loader.loadAsync('/assets/chars/usagi/usagi.glb'),
-  ])
-  const sculpts = new Map([['Usagi', buildUsagiAsset(usagiGltf.scene)]])
-  const gunScene = gunGltf.scene
-  gunScene.updateMatrixWorld(true)
-  const box = new THREE.Box3().setFromObject(gunScene)
-  const size0 = box.getSize(new THREE.Vector3())
-  document.title = `gun ${size0.x.toFixed(2)} ${size0.y.toFixed(2)} ${size0.z.toFixed(2)}`
-  gunScene.scale.setScalar(0.66 / Math.max(0.001, Math.max(box.getSize(new THREE.Vector3()).x, box.getSize(new THREE.Vector3()).z)))
-  const gun = { scene: new THREE.Group().add(gunScene), tip: 0.3, size: new THREE.Vector3(0.66, 0.2, 0.2), tint: 0.14, grip: [0, 0, 0] as const }
+  // Same asset pipeline as the game, so the lab shows the shipping guns and the
+  // sculpted guests exactly as `enemies.ts` will hold them.
+  const assets = await loadGameAssets()
+  const sculpts = assets.sculpts
+  const gun = assets.guns[Number(new URLSearchParams(location.search).get('gun') ?? 0)]
 
   const n = guests.length
   guests.forEach((config, i) => {

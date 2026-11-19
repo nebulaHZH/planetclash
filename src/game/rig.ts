@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js'
-import type { GunAsset } from './assets'
+import { heldGunScale, type GunAsset } from './assets'
 
 type PlayOptions = {
   fade?: number
@@ -89,9 +89,13 @@ export class CharacterRig {
     if (!gun) return
     const clone = gun.scene.clone(true)
     // Seat the grip in the palm and lift it a touch so the barrel clears the arm.
-    clone.position.set(0.02, 0.06, 0.1)
+    // Models arrive normalised around their own centre, so scaling them up would
+    // bury the grip in the fist — push the clone forward by the growth instead.
+    const k = heldGunScale(gun)
+    clone.scale.setScalar(k)
+    clone.position.set(0.02, 0.06, 0.1 + gun.tip * (k - 1))
     this.holder.add(clone)
-    this.gunTip.position.set(0.02, 0.06, 0.1 + gun.tip)
+    this.gunTip.position.set(0.02, 0.06, 0.1 + gun.tip * k)
     this.holder.add(this.gunTip)
   }
 

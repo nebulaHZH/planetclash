@@ -136,7 +136,7 @@ function assemble(spec: Spec): GuestBuild {
   body.add(head, ...arms, ...legs)
 
   const hands = new THREE.Group()
-  hands.position.set(0.14, spec.height * 0.46, 0.4)
+  hands.position.set(0.16, spec.height * 0.36, 0.3)
   group.add(body, hands)
   return { group, body, head, arms, legs, hands, height: spec.height, material }
 }

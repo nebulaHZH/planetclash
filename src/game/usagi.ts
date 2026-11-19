@@ -170,7 +170,7 @@ export function buildUsagi(asset: UsagiAsset): GuestBuild {
 
   const hands = new THREE.Group()
   // The sculpt is a plush hugging a pillow: the toy gun sits at the belly.
-  hands.position.set(0, asset.height * 0.24, 0.27)
+  hands.position.set(0.15, asset.height * 0.22, 0.32)
   group.add(body, hands)
 
   return { group, body, head, arms, legs, hands, height: asset.height, material }
