@@ -32,6 +32,8 @@ const PAL = {
   cream: '#FFF3DC',
   butter: '#FFD375',
   butterDeep: '#F5C46B',
+  pig: '#F9BCC8',
+  pigDeep: '#F29CB0',
   pink: '#FFB4C8',
   rose: '#F58AA4',
   candy: '#FF7FA8',
@@ -244,60 +246,78 @@ function nailong(): GuestBuild {
 
 function ggbond(): GuestBuild {
   const m = M()
+  /** Hemisphere shell: the red cowl sits on the skull without covering the face. */
+  const dome = (g: THREE.Object3D, mat: THREE.Material, r: number, at: [number, number, number], sweep = 1.36) => {
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(r, 26, 14, 0, Math.PI * 2, 0, sweep), mat)
+    mesh.position.set(at[0], at[1], at[2])
+    g.add(mesh)
+    return mesh
+  }
+
   return assemble({
-    height: 1.66,
-    headY: 1.22,
-    shoulder: [0.3, 0.86],
-    hip: [0.14, 0.36],
+    height: 1.5,
+    headY: 1.05,
+    shoulder: [0.29, 0.8],
+    hip: [0.13, 0.34],
     torso(g) {
-      capsule(g, m.red, 0.24, 0.3, [0, 0.62, 0])
-      // gold belt + chest emblem
-      const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.255, 0.255, 0.07, 16), m.gold)
-      belt.position.set(0, 0.47, 0)
-      g.add(belt)
-      blob(g, m.gold, [0.09, 0.1, 0.05], [0, 0.72, 0.22], 12)
-      // cape, swinging out behind
-      const cape = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.62, 0.04), m.redDeep)
-      cape.position.set(0, 0.6, -0.26)
-      cape.rotation.x = -0.18
-      g.add(cape)
-      const trim = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.06, 0.045), m.gold)
-      trim.position.set(0, 0.92, -0.31)
-      trim.rotation.x = -0.18
-      g.add(trim)
+      blob(g, m.red, [0.3, 0.34, 0.29], [0, 0.6, 0], 20)
+      // gold oval badge, sitting low on the belly the way the show draws it
+      blob(g, m.gold, [0.115, 0.145, 0.05], [0, 0.53, 0.272], 14)
+      // cowl collaring the neck and spilling down the back
+      blob(g, m.redDeep, [0.27, 0.15, 0.2], [0, 0.86, -0.06], 16)
+      blob(g, m.redDeep, [0.24, 0.1, 0.09], [0, 0.9, 0.14], 14)
+      const collar = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.045, 8, 20), m.redDeep)
+      collar.position.set(0, 0.855, 0.02)
+      collar.rotation.x = Math.PI / 2
+      g.add(collar)
     },
     head(g) {
-      blob(g, m.pink, [0.36, 0.34, 0.34], [0, 0, 0], 20)
-      // snout
-      const snout = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.15, 0.1, 14), m.rose)
-      snout.rotation.x = Math.PI / 2
-      snout.position.set(0, -0.09, 0.3)
-      g.add(snout)
-      blob(g, m.ink, [0.022, 0.03, 0.02], [-0.05, -0.09, 0.36], 8)
-      blob(g, m.ink, [0.022, 0.03, 0.02], [0.05, -0.09, 0.36], 8)
-      // floppy ears
+      blob(g, m.pig, [0.4, 0.375, 0.375], [0, 0, 0], 24)
+      // pig ears sit outside the cowl, just below its rim
       for (const side of [-1, 1]) {
-        const ear = cone(g, m.pink, 0.14, 0.26, [side * 0.3, 0.24, -0.02], [0.4, 0, side * -0.7])
-        ear.scale.set(1, 1, 0.55)
+        const ear = cone(g, m.pig, 0.105, 0.24, [side * 0.35, 0.18, -0.03], [0.15, 0, side * 0.95], 12)
+        ear.scale.set(1, 1, 0.62)
       }
-      // hero mask: a band across the eyes with white lenses
-      const band = new THREE.Mesh(new THREE.CylinderGeometry(0.352, 0.352, 0.15, 20, 1, true), m.red)
-      band.position.set(0, 0.06, 0.01)
-      g.add(band)
+      // red cowl: crown only, so the forehead stays pink like the show
+      const cap = dome(g, m.red, 0.418, [0, 0.02, -0.01], 0.92)
+      cap.scale.set(1, 1, 1.02)
+      // the two tied flaps that give the head its silhouette
       for (const side of [-1, 1]) {
-        blob(g, m.white, [0.085, 0.075, 0.03], [side * 0.135, 0.06, 0.31], 12)
-        blob(g, m.ink, [0.04, 0.045, 0.022], [side * 0.145, 0.06, 0.33], 10)
+        const petal = blob(g, m.redDeep, [0.105, 0.15, 0.062], [side * 0.13, 0.4, 0.0], 12)
+        petal.rotation.z = side * 0.7
+        petal.rotation.x = -0.14
       }
-      blob(g, m.blush, [0.06, 0.04, 0.025], [-0.26, -0.12, 0.24], 10)
-      blob(g, m.blush, [0.06, 0.04, 0.025], [0.26, -0.12, 0.24], 10)
+      blob(g, m.redDeep, [0.062, 0.058, 0.062], [0, 0.36, 0.01], 10)
+      // the cowl dips to a point in the middle of the brow, as drawn on air
+      const notch = cone(g, m.red, 0.072, 0.105, [0, 0.253, 0.318], [Math.PI, 0, 0], 4)
+      notch.scale.set(1, 1, 0.34)
+      notch.rotation.y = Math.PI / 4
+      // eyes: big cartoon ovals, tucked in above the snout
+      for (const side of [-1, 1]) {
+        blob(g, m.ink, [0.062, 0.08, 0.048], [side * 0.128, 0.045, 0.33], 14)
+        blob(g, m.white, [0.024, 0.027, 0.016], [side * 0.108, 0.078, 0.365], 8)
+      }
+      // snout: a fat pink oval with two nostrils
+      blob(g, m.pigDeep, [0.15, 0.105, 0.105], [0, -0.115, 0.305], 16)
+      for (const side of [-1, 1]) {
+        blob(g, m.ink, [0.026, 0.034, 0.02], [side * 0.05, -0.115, 0.398], 8)
+      }
+      // smile tucked under the snout
+      const smile = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.009, 6, 14, Math.PI), m.ink)
+      smile.position.set(0, -0.235, 0.315)
+      smile.rotation.set(0.3, 0, Math.PI)
+      g.add(smile)
+      for (const side of [-1, 1]) {
+        blob(g, m.blush, [0.07, 0.045, 0.028], [side * 0.26, -0.1, 0.262], 12)
+      }
     },
     arm(g) {
-      capsule(g, m.red, 0.08, 0.15, [0, -0.1, 0])
-      blob(g, m.gold, [0.095, 0.095, 0.095], [0, -0.22, 0], 10)
+      capsule(g, m.red, 0.075, 0.14, [0, -0.09, 0])
+      blob(g, m.gold, [0.092, 0.092, 0.092], [0, -0.21, 0.01], 12)
     },
     leg(g) {
-      capsule(g, m.red, 0.095, 0.1, [0, -0.11, 0])
-      blob(g, m.gold, [0.12, 0.07, 0.15], [0, -0.21, 0.05], 12)
+      capsule(g, m.red, 0.09, 0.09, [0, -0.09, 0])
+      blob(g, m.gold, [0.105, 0.07, 0.145], [0, -0.2, 0.045], 12)
     },
   })
 }

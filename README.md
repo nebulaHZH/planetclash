@@ -13,7 +13,7 @@
 | 枪模 `raygun` / `coilgun` / `launcher` | [Poly Pizza](https://poly.pizza/) — Raygun by Gabriel Valdivia、Coil Gun by Vas Pupin、Sci-Fi Grenade Launcher | CC-BY 3.0 |
 | 乌萨奇 `usagi.glb` | 用户提供的 STL，`tools/build-usagi.mjs` 转成 GLB 并减面 | 同人练习，不商用 |
 | 奶龙 `nailong/model.glb` | [bigdiu/naiwa-nailoong-blender-model](https://github.com/bigdiu/naiwa-nailoong-blender-model)（`nailong_colored.blend`） | 同人练习，不商用 |
-| 吉伊卡哇 / 猪猪侠 | 程序化重建，无外部模型文件 | 同人练习，不商用 |
+| 吉伊卡哇 / 猪猪侠 | 程序化重建（按官方参考图逐部位手搓，无外部模型文件） | 同人练习，不商用 |
 
 CC-BY 模型在 `src/game/assets.ts` 顶部注释中标注了作者；分发本作时请保留这些署名。
 
