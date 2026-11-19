@@ -84,8 +84,8 @@ export type DigHole = {
   scoops: DigScoop[]
 }
 
-/** Past this the planet would be a shell, not a ball. */
-export const DIG_MAX = 11
+/** Digging stops at this depth below the local surface — the planet's floor. */
+export const DIG_MAX = 3
 /** How much dirt one scoop takes out, in metres of radius. */
 export const SCOOP_R = 1.62
 
@@ -284,12 +284,12 @@ function refresh(hole: DigHole) {
  * Shovel at a world point, swinging along `aim`. Returns the excavation that
  * now owns the spot so the world can resculpt around it.
  *
- * The bite is centred just short of the surface along the swing: each sphere
- * still overlaps the last bite, but only sinks ~1.3m per swing, so a shaft is
+ * The bite is centred well short of the surface along the swing: each sphere
+ * still overlaps the last bite, but only sinks ~1m per swing, so a shaft is
  * dug swing by swing instead of swallowing you in two.
  */
 export function digAt(point: THREE.Vector3, aim: THREE.Vector3): DigHole {
-  const centre = _vE.copy(point).addScaledVector(aim, SCOOP_R * -0.22).clone()
+  const centre = _vE.copy(point).addScaledVector(aim, SCOOP_R * -0.4).clone()
   // The core is off limits: no bite may remove dirt deeper than DIG_MAX below
   // the local surface. Rides the centre up until the sphere bottoms out right
   // on the boundary, so deep digging turns sideways instead of down.
