@@ -725,7 +725,7 @@ kbd {
   .menu {
     place-items: center start;
     padding-left: clamp(32px, 6vw, 96px);
-    background: linear-gradient(100deg, rgba(14, 7, 24, 0.9) 0%, rgba(14, 7, 24, 0.72) 34%, rgba(14, 7, 24, 0.12) 100%);
+    background: linear-gradient(100deg, rgba(14, 7, 24, 0.92) 0%, rgba(14, 7, 24, 0.7) 30%, rgba(14, 7, 24, 0.08) 58%, rgba(14, 7, 24, 0) 76%);
   }
 
   .menu-card {

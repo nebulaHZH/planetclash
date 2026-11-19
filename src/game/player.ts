@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { PHYSICS } from '../config'
 import { surfaceRadius } from './world'
+import type { Obstacle } from './props'
 
 export type MoveInput = {
   forward: number
@@ -10,6 +11,7 @@ export type MoveInput = {
 }
 
 const _up = new THREE.Vector3(0, 1, 0)
+const _away = new THREE.Vector3()
 
 export class Player {
   dir = new THREE.Vector3(0, 1, 0)
@@ -30,6 +32,7 @@ export class Player {
   jumpedThisFrame = false
   moving = false
   speedNorm = 0
+  obstacles: Obstacle[] = []
   private sprintLock = false
   private regenDelay = 0
   private jumpQueued = false
@@ -138,6 +141,8 @@ export class Player {
       this.heading.normalize()
     }
 
+    this.collide()
+
     if (this.jumpQueued) {
       this.jumpQueued = false
       if (this.grounded) {
@@ -169,6 +174,29 @@ export class Player {
       this.bobPhase += dt * (6 + this.moveVel.length() * 0.75)
     } else if (!this.grounded) {
       this.bobPhase += dt * 2
+    }
+  }
+
+  /** Push the capsule out of solid props along the great circle. */
+  private collide() {
+    if (this.obstacles.length === 0) return
+    for (let pass = 0; pass < 2; pass++) {
+      for (const obstacle of this.obstacles) {
+        if (this.alt > obstacle.height) continue
+        const dot = THREE.MathUtils.clamp(this.dir.dot(obstacle.dir), -1, 1)
+        const arc = Math.acos(dot) * PHYSICS.radius
+        const min = obstacle.radius + 0.42
+        if (arc >= min) continue
+        _away.copy(this.dir).addScaledVector(obstacle.dir, -dot)
+        if (_away.lengthSq() < 1e-8) _away.set(1, 0, 0).projectOnPlane(this.dir)
+        _away.normalize()
+        this.dir.addScaledVector(_away, (min - arc) / PHYSICS.radius).normalize()
+        this.heading.addScaledVector(this.dir, -this.heading.dot(this.dir))
+        if (this.heading.lengthSq() < 1e-6) this.heading.set(1, 0, 0).projectOnPlane(this.dir)
+        this.heading.normalize()
+        const into = this.moveVel.dot(_away)
+        if (into < 0) this.moveVel.addScaledVector(_away, -into)
+      }
     }
   }
 }

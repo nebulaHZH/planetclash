@@ -2,7 +2,8 @@ import * as THREE from 'three'
 import { COLORS, WEAPONS, type CharacterConfig, type WeaponConfig } from '../config'
 import type { Player } from './player'
 import type { GameAudio } from './audio'
-import { outlined, radialTexture, starGeometry, toon } from './toon'
+import type { GunAsset } from './assets'
+import { gradientMap, toon } from './toon'
 
 export type WeaponHooks = {
   onShoot: (weapon: WeaponConfig, spread: number) => void
@@ -15,13 +16,60 @@ type Model = {
   group: THREE.Group
   flash: THREE.Sprite
   flashMat: THREE.SpriteMaterial
+  flashLight: THREE.PointLight
   mag: THREE.Object3D | null
-  muzzle: THREE.Vector3
+  magBase: THREE.Vector3
+  mats: THREE.Material[]
+  geos: THREE.BufferGeometry[]
 }
 
-const HIP = new THREE.Vector3(0.32, -0.27, -0.80)
-const ADS = new THREE.Vector3(0.19, -0.23, -0.60)
+const HIP = new THREE.Vector3(0.185, -0.175, -0.6)
+const ADS = new THREE.Vector3(0.028, -0.098, -0.52)
+/** Kenney blasters are normalised to 0.66 m in assets.ts. */
+const GUN_LENGTH = 0.32
 const _v = new THREE.Vector3()
+const _dir = new THREE.Vector3()
+const _up = new THREE.Vector3(0, 1, 0)
+const _tint = new THREE.Color()
+
+type Shell = { mesh: THREE.Mesh; vel: THREE.Vector3; spin: THREE.Vector3; life: number }
+
+let flashTex: THREE.CanvasTexture | null = null
+/** Six-point spark with a hot core, drawn once and shared by every gun. */
+function muzzleFlashTexture() {
+  if (flashTex) return flashTex
+  const size = 128
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = size
+  const ctx = canvas.getContext('2d')!
+  const c = size / 2
+  const glow = ctx.createRadialGradient(c, c, 0, c, c, c)
+  glow.addColorStop(0, 'rgba(255,255,255,1)')
+  glow.addColorStop(0.26, 'rgba(255,255,255,0.92)')
+  glow.addColorStop(0.52, 'rgba(255,255,255,0.26)')
+  glow.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = glow
+  ctx.fillRect(0, 0, size, size)
+  ctx.translate(c, c)
+  ctx.globalCompositeOperation = 'lighter'
+  for (let i = 0; i < 6; i++) {
+    ctx.rotate(Math.PI / 3)
+    const ray = ctx.createLinearGradient(0, 0, 0, -c)
+    ray.addColorStop(0, 'rgba(255,255,255,0.95)')
+    ray.addColorStop(0.6, 'rgba(255,255,255,0.35)')
+    ray.addColorStop(1, 'rgba(255,255,255,0)')
+    ctx.fillStyle = ray
+    ctx.beginPath()
+    ctx.moveTo(-6.5, 0)
+    ctx.lineTo(0, -c * 0.96)
+    ctx.lineTo(6.5, 0)
+    ctx.closePath()
+    ctx.fill()
+  }
+  flashTex = new THREE.CanvasTexture(canvas)
+  flashTex.colorSpace = THREE.SRGBColorSpace
+  return flashTex
+}
 
 export class WeaponSystem {
   index = 0
@@ -35,6 +83,8 @@ export class WeaponSystem {
   viewCamera: THREE.PerspectiveCamera
   private root = new THREE.Group()
   private models: Model[] = []
+  private shells: Shell[] = []
+  private guns: GunAsset[] = []
   private character: CharacterConfig | null = null
   private reloading = false
   private reloadT = 0
@@ -69,25 +119,38 @@ export class WeaponSystem {
     this.viewCamera = new THREE.PerspectiveCamera(74, 1, 0.01, 10)
     this.viewScene.add(this.viewCamera)
     this.viewCamera.add(this.root)
+
+    const shellGeo = new THREE.CylinderGeometry(0.0075, 0.0075, 0.022, 6)
+    const shellMat = new THREE.MeshBasicMaterial({ color: COLORS.gold })
+    for (let i = 0; i < 6; i++) {
+      const mesh = new THREE.Mesh(shellGeo, shellMat)
+      mesh.visible = false
+      this.viewScene.add(mesh)
+      this.shells.push({ mesh, vel: new THREE.Vector3(), spin: new THREE.Vector3(), life: 0 })
+    }
   }
 
   get weapon() {
     return WEAPONS[this.index]
   }
 
+  setGuns(guns: GunAsset[]) {
+    this.guns = guns
+    if (this.character) this.setCharacter(this.character)
+  }
+
   setCharacter(character: CharacterConfig) {
     this.character = character
     for (const model of this.models) {
       this.root.remove(model.group)
-      model.group.traverse((obj) => {
-        const mesh = obj as THREE.Mesh
-        if (mesh.geometry) mesh.geometry.dispose()
-      })
       model.flashMat.dispose()
+      // Gun geometry/maps belong to the shared asset pack, so only dispose what we built here.
+      for (const mat of model.mats) mat.dispose()
+      for (const geo of model.geos) geo.dispose()
     }
     this.models = []
-    WEAPONS.forEach((weapon) => {
-      const model = this.buildModel(weapon, character)
+    WEAPONS.forEach((weapon, i) => {
+      const model = this.buildModel(weapon, character, this.guns[i])
       model.group.visible = false
       this.root.add(model.group)
       this.models.push(model)
@@ -95,104 +158,96 @@ export class WeaponSystem {
     this.models[this.index].group.visible = true
   }
 
-  private material(color: THREE.ColorRepresentation) {
-    return toon(color)
-  }
-
-  private buildModel(weapon: WeaponConfig, character: CharacterConfig): Model {
+  private buildModel(weapon: WeaponConfig, character: CharacterConfig, asset?: GunAsset): Model {
     const group = new THREE.Group()
-    const metal = this.material('#EFE9F7')
-    const dark = this.material('#5B4276')
-    const accent = this.material(character.accentColor)
-    const accent2 = this.material(character.bodyColor)
-    const gold = this.material(COLORS.gold)
-    const skin = this.material(COLORS.skin)
+    const mats: THREE.Material[] = []
+    const geos: THREE.BufferGeometry[] = []
+    const glove = toon('#43304F')
+    const sleeve = toon(character.accentColor)
+    mats.push(glove, sleeve)
+    const muzzle = new THREE.Vector3(0, 0.012, -0.34)
+    let mag: THREE.Object3D | null = null
+    const magBase = new THREE.Vector3()
 
-    const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, outline = true) => {
-      const mesh = new THREE.Mesh(geo, mat)
-      mesh.position.set(x, y, z)
-      if (outline) outlined(mesh, 1.06)
-      group.add(mesh)
-      return mesh
+    const addHand = (x: number, y: number, z: number, radius: number) => {
+      const geo = new THREE.SphereGeometry(radius, 14, 12)
+      geos.push(geo)
+      const hand = new THREE.Mesh(geo, glove)
+      hand.position.set(x, y, z)
+      hand.scale.set(1, 0.9, 1.24)
+      group.add(hand)
     }
 
-    let muzzle = new THREE.Vector3(0, 0.04, -0.55)
-    let mag: THREE.Object3D | null = null
+    const addSleeve = (from: THREE.Vector3, to: THREE.Vector3, radius: number) => {
+      _dir.subVectors(to, from)
+      const length = _dir.length()
+      const geo = new THREE.CapsuleGeometry(radius, Math.max(0.02, length - radius * 2), 4, 10)
+      geos.push(geo)
+      const arm = new THREE.Mesh(geo, sleeve)
+      arm.position.copy(from).addScaledVector(_dir, 0.5)
+      arm.quaternion.setFromUnitVectors(_up, _dir.normalize())
+      group.add(arm)
+    }
 
-    if (weapon.viewmodel === 'pistol') {
-      const body = add(new THREE.CapsuleGeometry(0.075, 0.24, 6, 14), metal, 0, 0.03, -0.14)
-      body.rotation.x = Math.PI / 2
-      add(new THREE.BoxGeometry(0.055, 0.03, 0.3), accent, 0, 0.1, -0.12)
-      add(new THREE.BoxGeometry(0.03, 0.05, 0.045), metal, 0, 0.13, -0.25)
-      const nozzle = add(new THREE.CylinderGeometry(0.058, 0.078, 0.14, 12), dark, 0, 0.03, -0.37)
-      nozzle.rotation.x = Math.PI / 2
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.076, 0.017, 6, 16), gold)
-      ring.position.set(0, 0.03, -0.43)
-      ring.rotation.y = 0
-      group.add(ring)
-      const bubble = new THREE.Mesh(
-        new THREE.SphereGeometry(0.06, 14, 10),
-        toon(COLORS.sky, { transparent: true, opacity: 0.5 }),
-      )
-      bubble.position.set(0, 0.155, 0.02)
-      group.add(bubble)
-      const grip = add(new THREE.BoxGeometry(0.11, 0.24, 0.13), dark, 0, -0.17, 0.05)
-      grip.rotation.x = 0.24
-      add(new THREE.BoxGeometry(0.12, 0.035, 0.14), accent2, 0, -0.29, 0.08)
-      const star = new THREE.Mesh(starGeometry(0.06, 0.024), gold)
-      star.position.set(-0.078, 0.03, -0.16)
-      star.rotation.y = -Math.PI / 2
-      group.add(star)
-      muzzle = new THREE.Vector3(0, 0.03, -0.5)
-      this.addHands(group, skin, accent2, 0.01, -0.20, 0.03)
-    } else if (weapon.viewmodel === 'smg') {
-      add(new THREE.BoxGeometry(0.18, 0.19, 0.5), accent, 0, 0.03, -0.18)
-      add(new THREE.BoxGeometry(0.13, 0.12, 0.34), metal, 0, 0.05, -0.42)
-      const barrel = add(new THREE.CylinderGeometry(0.045, 0.045, 0.2, 10), dark, 0, 0.05, -0.6)
-      barrel.rotation.x = Math.PI / 2
-      const drum = add(new THREE.CylinderGeometry(0.11, 0.11, 0.17, 14), metal, 0, -0.14, -0.08)
-      drum.rotation.z = Math.PI / 2
-      mag = drum
-      const grip = add(new THREE.BoxGeometry(0.11, 0.24, 0.14), dark, 0, -0.22, 0.08)
-      grip.rotation.x = 0.28
-      add(new THREE.BoxGeometry(0.07, 0.085, 0.16), accent2, 0, 0.02, 0.11)
-      const ringColors = [COLORS.candy, COLORS.lemon, COLORS.mint]
-      ringColors.forEach((color, i) => {
-        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.085, 0.022, 6, 16), this.material(color))
-        ring.position.set(0, 0.05, -0.33 - i * 0.09)
-        group.add(ring)
+    if (asset) {
+      const gun = asset.scene.clone(true)
+      gun.traverse((obj) => {
+        const mesh = obj as THREE.Mesh
+        if (!mesh.isMesh) return
+        const src = mesh.material as THREE.MeshStandardMaterial
+        const mat = new THREE.MeshToonMaterial({
+          map: src.map ?? null,
+          color: _tint.copy(src.color ?? new THREE.Color('#ffffff')).lerp(new THREE.Color(weapon.color), 0.3),
+          gradientMap: gradientMap(),
+        })
+        mats.push(mat)
+        mesh.material = mat
+        mesh.castShadow = false
+        mesh.receiveShadow = false
+        if (/magazine/i.test(mesh.name)) {
+          mag = mesh
+          magBase.copy(mesh.position)
+        }
       })
-      muzzle = new THREE.Vector3(0, 0.05, -0.73)
-      this.addHands(group, skin, accent2, 0.08, -0.18, 0.07)
-    } else {
-      for (const x of [-0.07, 0.07]) {
-        const barrel = add(new THREE.CylinderGeometry(0.062, 0.062, 0.66, 10), metal, x, 0.045, -0.38)
-        barrel.rotation.x = Math.PI / 2
-        const band = new THREE.Mesh(new THREE.TorusGeometry(0.068, 0.018, 6, 14), gold)
-        band.position.set(x, 0.045, -0.66)
-        group.add(band)
+      const scale = GUN_LENGTH / (asset.tip * 2)
+      gun.scale.setScalar(scale)
+      // Barrel points down -Z in view space.
+      gun.rotation.y = Math.PI
+      gun.position.set(0.004, 0.012, -0.02)
+      group.add(gun)
+      muzzle.set(0.004, 0.012, -0.02 - asset.tip * scale - 0.02)
+
+      // Right hand on the grip, left hand under the barrel for the two-handers.
+      addHand(0.024, -0.048, 0.052, 0.047)
+      addSleeve(new THREE.Vector3(0.03, -0.06, 0.06), new THREE.Vector3(0.29, -0.52, 0.26), 0.046)
+      if (weapon.pellets > 1 || weapon.auto) {
+        addHand(-0.104, -0.026, -0.11, 0.044)
+        addSleeve(new THREE.Vector3(-0.115, -0.036, -0.1), new THREE.Vector3(-0.32, -0.5, 0.12), 0.042)
       }
-      add(new THREE.BoxGeometry(0.22, 0.16, 0.3), accent, 0, 0.01, -0.12)
-      const pump = add(new THREE.BoxGeometry(0.19, 0.13, 0.2), dark, 0, -0.04, -0.34)
-      pump.rotation.x = 0.02
-      const stock = add(new THREE.BoxGeometry(0.10, 0.14, 0.18), accent2, 0, -0.10, 0.09)
-      stock.rotation.x = -0.14
-      add(new THREE.BoxGeometry(0.1, 0.2, 0.12), dark, 0, -0.2, 0.08)
-      const star = new THREE.Mesh(starGeometry(0.11, 0.045), gold)
-      star.position.set(0.115, 0.03, -0.14)
-      star.rotation.y = Math.PI / 2
-      group.add(star)
-      muzzle = new THREE.Vector3(0, 0.045, -0.73)
-      this.addHands(group, skin, accent2, 0.08, -0.18, 0.08)
+    } else {
+      // Pre-asset fallback so the weapon system is never empty.
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.11, 0.34), glove)
+      geos.push(body.geometry)
+      body.position.set(0, 0, -0.06)
+      group.add(body)
+      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.16, 10), sleeve)
+      geos.push(barrel.geometry)
+      barrel.position.set(0, 0.015, -0.26)
+      barrel.rotation.x = Math.PI / 2
+      group.add(barrel)
+      addHand(0.024, -0.05, 0.06, 0.047)
+      addSleeve(new THREE.Vector3(0.03, -0.06, 0.07), new THREE.Vector3(0.29, -0.52, 0.26), 0.046)
+      muzzle.set(0, 0.015, -0.34)
     }
 
     const flashMat = new THREE.SpriteMaterial({
-      map: radialTexture(64, 'rgba(255,252,210,1)', 'rgba(255,170,210,0.35)'),
+      map: muzzleFlashTexture(),
       color: weapon.color,
       transparent: true,
       opacity: 0,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
+      depthTest: false,
     })
     const flash = new THREE.Sprite(flashMat)
     flash.position.copy(muzzle)
@@ -200,22 +255,12 @@ export class WeaponSystem {
     flash.visible = false
     group.add(flash)
 
-    group.position.copy(HIP)
-    group.scale.setScalar(0.55)
-    return { group, flash, flashMat, mag, muzzle }
-  }
+    const flashLight = new THREE.PointLight(weapon.color, 0, 1.6, 2)
+    flashLight.position.copy(muzzle)
+    group.add(flashLight)
 
-  private addHands(group: THREE.Group, skin: THREE.Material, sleeve: THREE.Material, x: number, y: number, z: number) {
-    // One chunky mitten on the grip reads better than a pair of tiny hands at this FOV.
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8), skin)
-    hand.position.set(x + 0.045, y, z + 0.03)
-    hand.scale.set(1.05, 0.9, 1.2)
-    group.add(hand)
-    const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.05, 0.13, 4, 8), sleeve)
-    arm.position.copy(hand.position).add(new THREE.Vector3(0.02, -0.15, 0.11))
-    arm.rotation.x = 0.55
-    arm.rotation.z = 0.12
-    group.add(arm)
+    group.position.copy(HIP)
+    return { group, flash, flashMat, flashLight, mag, magBase, mats, geos }
   }
 
   reset() {
@@ -239,6 +284,14 @@ export class WeaponSystem {
       model.group.position.copy(HIP)
       model.group.rotation.set(0, 0, 0)
     })
+    this.flashT = 0
+    this.aimLerp = 0
+    this.swayX = 0
+    this.swayY = 0
+    for (const shell of this.shells) {
+      shell.life = 0
+      shell.mesh.visible = false
+    }
   }
 
   select(index: number) {
@@ -328,6 +381,7 @@ export class WeaponSystem {
     const spread = (aiming ? weapon.spreadAim : weapon.spreadHip) + movement + air + bloomSpread
     this.spread01 = THREE.MathUtils.clamp(spread / 0.14, 0, 1)
 
+    this.updateShells(dt)
     this.animate(dt, player)
   }
 
@@ -347,10 +401,50 @@ export class WeaponSystem {
     this.bloom = Math.min(1.6, this.bloom + 0.1 + weapon.recoil * 0.09)
     this.kick = Math.min(1, this.kick + 0.35 + weapon.recoil * 0.12)
     this.flashT = 0.055
+    this.ejectShell()
     const spread = (this.aiming ? weapon.spreadAim : weapon.spreadHip) + this.bloom * 0.012 + 0.004
     this.audio.shoot(weapon.sound)
     this.hooks.onShoot(weapon, spread)
     if (this.ammo[this.index] === 0) this.autoReload = 0.22
+  }
+
+  private ejectShell() {
+    const model = this.models[this.index]
+    if (!model) return
+    let shell = this.shells.find((s) => s.life <= 0)
+    if (!shell) shell = this.shells[0]
+    model.group.updateWorldMatrix(true, false)
+    shell.mesh.position.set(0.062, 0.004, 0.03).applyMatrix4(model.group.matrixWorld)
+    shell.vel.set(
+      0.55 + Math.random() * 0.35,
+      0.45 + Math.random() * 0.35,
+      0.35 + Math.random() * 0.2,
+    )
+    shell.spin.set(
+      (Math.random() - 0.5) * 26,
+      (Math.random() - 0.5) * 26,
+      (Math.random() - 0.5) * 26,
+    )
+    shell.life = 0.7
+    shell.mesh.visible = true
+    shell.mesh.scale.setScalar(1)
+  }
+
+  private updateShells(dt: number) {
+    for (const shell of this.shells) {
+      if (shell.life <= 0) continue
+      shell.life -= dt
+      if (shell.life <= 0) {
+        shell.mesh.visible = false
+        continue
+      }
+      shell.vel.y -= 6.2 * dt
+      shell.mesh.position.addScaledVector(shell.vel, dt)
+      shell.mesh.rotation.x += shell.spin.x * dt
+      shell.mesh.rotation.y += shell.spin.y * dt
+      shell.mesh.rotation.z += shell.spin.z * dt
+      shell.mesh.scale.setScalar(Math.min(1, shell.life * 5))
+    }
   }
 
   private animate(dt: number, player: Player) {
@@ -358,38 +452,39 @@ export class WeaponSystem {
     if (!model) return
     const group = model.group
     const moving = player.grounded ? player.speedNorm : 0.25
+    const idle = Math.max(0, 1 - moving * 3)
     const phase = player.bobPhase
     const bobX = Math.sin(phase) * 0.014 * moving
     const bobY = Math.abs(Math.cos(phase)) * -0.012 * moving
     const lift = 1 - this.switchT
     const reloadPhase = this.reloading ? Math.min(1, this.reloadT / this.weapon.reload) : 0
     const dip = Math.sin(reloadPhase * Math.PI)
+    const swayScale = 1 - this.aimLerp * 0.72
 
     _v.copy(HIP).lerp(ADS, this.aimLerp)
-    _v.x += bobX * (1 - this.aimLerp * 0.7) + this.swayX
-    _v.y += bobY + this.swayY - player.landDip * 0.45 - lift * 0.5 + this.kick * 0.018 - dip * 0.13
+    _v.x += bobX * (1 - this.aimLerp * 0.7) + this.swayX * swayScale + Math.cos(this.time * 1.3) * 0.0025 * idle
+    _v.y += bobY + this.swayY * swayScale - player.landDip * 0.45 - lift * 0.5 + this.kick * 0.018 - dip * 0.13 + Math.sin(this.time * 1.9) * 0.004 * idle
     _v.z += this.kick * 0.06
     group.position.lerp(_v, 1 - Math.exp(-24 * dt))
 
     const rotX = this.kick * 0.24 - lift * 0.7 + dip * 0.55
-    const rotY = this.swayX * 3.5 + (1 - this.aimLerp) * 0.07
+    const rotY = this.swayX * 3.2 * swayScale + (1 - this.aimLerp) * 0.07 + Math.sin(this.time * 1.1) * 0.008 * idle
     const rotZ = lift * 0.35 + Math.sin(phase) * 0.012 * moving + dip * 0.2
     group.rotation.x += (rotX - group.rotation.x) * Math.min(1, dt * 18)
     group.rotation.y += (rotY - group.rotation.y) * Math.min(1, dt * 12)
     group.rotation.z += (rotZ - group.rotation.z) * Math.min(1, dt * 12)
 
-    if (model.mag) {
-      model.mag.position.y = -0.14 - dip * 0.34
-    }
+    if (model.mag) model.mag.position.y = model.magBase.y - dip * 0.11
 
     for (const m of this.models) {
-      m.flash.visible = m === model && this.flashT > 0
-      if (m.flash.visible) {
-        m.flashMat.opacity = Math.min(1, this.flashT * 22)
-        const scale = 0.26 + Math.random() * 0.16
-        m.flash.scale.setScalar(scale)
-        m.flash.material.rotation = Math.random() * Math.PI
-      }
+      const firing = m === model && this.flashT > 0
+      m.flash.visible = firing
+      m.flashLight.intensity = firing ? Math.min(2.2, this.flashT * 38) : 0
+      if (!firing) continue
+      m.flashMat.opacity = Math.min(1, this.flashT * 26)
+      const scale = 0.3 + Math.random() * 0.16
+      m.flash.scale.setScalar(scale)
+      m.flashMat.rotation = Math.random() * Math.PI
     }
   }
 

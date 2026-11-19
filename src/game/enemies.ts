@@ -1,13 +1,10 @@
 import * as THREE from 'three'
 import { CHARACTERS, COLORS, type CharacterConfig } from '../config'
-import {
-  alertTexture,
-  buildCharacter,
-  flashCharacter,
-  radialTexture,
-  type CharacterBuild,
-} from './toon'
+import { alertTexture, radialTexture } from './toon'
 import { dirFromLatLon, surfaceRadius } from './world'
+import { ENEMY_SPAWNS } from './landmarks'
+import { CharacterRig } from './rig'
+import type { GameAssets } from './assets'
 import type { Fx } from './fx'
 import type { GameAudio } from './audio'
 
@@ -24,7 +21,7 @@ type Bullet = {
 export type Enemy = {
   id: number
   config: CharacterConfig
-  build: CharacterBuild
+  rig: CharacterRig
   group: THREE.Group
   anchor: THREE.Vector3
   health: number
@@ -34,29 +31,24 @@ export type Enemy = {
   cooldown: number
   flash: number
   punch: number
+  animLock: number
+  deathT: number
   defeated: boolean
   bar: THREE.Group
   barFill: THREE.Mesh
   alertSprite: THREE.Sprite
   up: THREE.Vector3
   pos: THREE.Vector3
+  gunTip: THREE.Vector3
 }
-
-const SPAWNS: [number, number][] = [
-  [16, -8], [34, 12], [-24, 30], [-40, -12], [44, -38], [-14, -54], [10, -24],
-]
 
 const _v = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
-const _q = new THREE.Quaternion()
-const BAR_LOW = new THREE.Color(COLORS.candy)
-const BAR_HIGH = new THREE.Color(COLORS.mint)
 const _ab = new THREE.Vector3()
 const _closest = new THREE.Vector3()
-
-function _muzzle(enemy: Enemy) {
-  return _v2.copy(enemy.pos).addScaledVector(enemy.up, 1.55)
-}
+const _dir = new THREE.Vector3()
+const BAR_LOW = new THREE.Color(COLORS.candy)
+const BAR_HIGH = new THREE.Color(COLORS.mint)
 
 /** Small planets hide things behind the horizon — enemies may not shoot through it. */
 export function hasLineOfSight(a: THREE.Vector3, b: THREE.Vector3) {
@@ -68,7 +60,10 @@ export function hasLineOfSight(a: THREE.Vector3, b: THREE.Vector3) {
 
 export class EnemyManager {
   enemies: Enemy[] = []
+  /** Props and walls that stop bullets and break enemy line of sight. */
+  occluders: THREE.Object3D[] = []
   private bullets: Bullet[] = []
+  private ray = new THREE.Raycaster()
   private barBgMat = new THREE.MeshBasicMaterial({ color: COLORS.outline, transparent: true, opacity: 0.75 })
   private alertMap = alertTexture()
   private bulletMat = new THREE.MeshBasicMaterial({ color: COLORS.candy })
@@ -79,15 +74,36 @@ export class EnemyManager {
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   })
+  private ready = false
 
   constructor(private scene: THREE.Scene, private fx: Fx, private audio: GameAudio) {
-    SPAWNS.forEach(([lat, lon], index) => {
+    for (let i = 0; i < 18; i++) {
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 10), this.bulletMat)
+      mesh.visible = false
+      const glow = new THREE.Sprite(this.glowMat)
+      glow.scale.setScalar(1.1)
+      mesh.add(glow)
+      this.scene.add(mesh)
+      this.bullets.push({ mesh, glow, pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, trail: 0, active: false })
+    }
+  }
+
+  get isReady() {
+    return this.ready
+  }
+
+  /** Build the cast once the GLB assets arrive. */
+  init(assets: GameAssets) {
+    if (this.ready) return
+    this.ready = true
+    ENEMY_SPAWNS.forEach(([lat, lon], index) => {
       const config = CHARACTERS[(index + 1) % CHARACTERS.length]
-      const build = buildCharacter(config, { enemy: true })
-      const group = build.group
+      const source = assets.characters.get(config.model)
+      if (!source) return
+      const rig = new CharacterRig(source, assets.clips, config.health > 3 ? 0.8 : 0.74)
+      rig.setGun(assets.guns[index % assets.guns.length])
+      const group = rig.root
       group.userData.enemyId = index
-      const scale = config.health > 3 ? 1.12 : 1
-      group.scale.setScalar(scale)
       this.scene.add(group)
 
       const bar = new THREE.Group()
@@ -116,34 +132,28 @@ export class EnemyManager {
       this.enemies.push({
         id: index,
         config,
-        build,
+        rig,
         group,
         anchor: dirFromLatLon(lat, lon),
         health: maxHealth,
         maxHealth,
         phase: Math.random() * 6.28,
         alert: 0,
-        cooldown: 1.5 + Math.random() * 2.5,
+        cooldown: 1.8 + Math.random() * 2.5,
         flash: 0,
         punch: 0,
+        animLock: 0,
+        deathT: 0,
         defeated: false,
         bar,
         barFill: fill,
         alertSprite,
         up: new THREE.Vector3(0, 1, 0),
         pos: new THREE.Vector3(),
+        gunTip: new THREE.Vector3(),
       })
     })
-
-    for (let i = 0; i < 16; i++) {
-      const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 10), this.bulletMat)
-      mesh.visible = false
-      const glow = new THREE.Sprite(this.glowMat)
-      glow.scale.setScalar(1.1)
-      mesh.add(glow)
-      this.scene.add(mesh)
-      this.bullets.push({ mesh, glow, pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, trail: 0, active: false })
-    }
+    this.reset()
   }
 
   get aliveCount() {
@@ -169,12 +179,15 @@ export class EnemyManager {
       enemy.flash = 0
       enemy.punch = 0
       enemy.alert = 0
-      enemy.cooldown = 2.4 + i * 0.4 + Math.random() * 2
+      enemy.animLock = 1
+      enemy.deathT = 0
+      enemy.cooldown = 2.6 + i * 0.4 + Math.random() * 2
       enemy.group.visible = true
-      enemy.group.scale.setScalar(enemy.config.health > 3 ? 1.12 : 1)
+      enemy.group.scale.setScalar(1)
       enemy.bar.visible = false
       enemy.alertSprite.visible = false
-      flashCharacter(enemy.build, 0)
+      enemy.rig.flash(0)
+      enemy.rig.play('Spawn_Ground', { once: true, fade: 0.1 })
     })
     for (const bullet of this.bullets) {
       bullet.active = false
@@ -191,11 +204,17 @@ export class EnemyManager {
     if (enemy.health <= 0) {
       enemy.health = 0
       enemy.defeated = true
-      enemy.group.visible = false
+      enemy.deathT = 1.7
       enemy.bar.visible = false
       enemy.alertSprite.visible = false
       enemy.alert = 0
+      enemy.animLock = 0
+      enemy.rig.play('Death_A', { once: true, fade: 0.06 })
       return true
+    }
+    if (enemy.animLock <= 0 && Math.random() < 0.55) {
+      enemy.rig.play('Hit_A', { once: true, fade: 0.05 })
+      enemy.animLock = 0.3
     }
     return false
   }
@@ -209,35 +228,39 @@ export class EnemyManager {
     onPlayerHit: (from: THREE.Vector3) => void,
   ) {
     for (const enemy of this.enemies) {
-      if (enemy.defeated) continue
-      const sway = Math.sin(time * 0.34 + enemy.phase) * 0.11
+      if (enemy.defeated) {
+        if (enemy.deathT > 0) {
+          enemy.deathT -= dt
+          enemy.rig.update(dt)
+          if (enemy.deathT <= 0) enemy.group.visible = false
+        }
+        continue
+      }
+
       enemy.up.copy(enemy.anchor).normalize()
-      _q.setFromAxisAngle(enemy.up, sway)
-      _v.copy(enemy.anchor).applyQuaternion(_q)
+      _v.copy(enemy.anchor)
       const radius = surfaceRadius(_v)
-      enemy.pos.copy(_v).multiplyScalar(radius + 0.05)
+      enemy.pos.copy(_v).multiplyScalar(radius + 0.04)
       enemy.group.position.copy(enemy.pos)
       enemy.group.up.copy(enemy.up)
       _v2.copy(eye)
       enemy.group.lookAt(_v2)
-      // chibi faces -Z, and Object3D.lookAt aims +Z at the target
-      enemy.group.rotateY(Math.PI)
+
+      enemy.punch = Math.max(0, enemy.punch - dt * 6)
+      const base = enemy.config.health > 3 ? 1.04 : 1
+      enemy.group.scale.setScalar(base * (1 + enemy.punch * 0.07))
+      if (enemy.flash > 0) enemy.flash = Math.max(0, enemy.flash - dt * 5)
+      enemy.rig.flash(enemy.flash)
+      if (enemy.animLock > 0) enemy.animLock -= dt
+      enemy.rig.update(dt)
+      enemy.rig.muzzle(enemy.gunTip)
 
       const distance = enemy.pos.distanceTo(eye)
-      const pulse = 1 + Math.sin(time * 2.4 + enemy.phase) * 0.012
-      const punch = 1 + enemy.punch * 0.09
-      const base = enemy.config.health > 3 ? 1.12 : 1
-      enemy.group.scale.setScalar(base * pulse * punch)
-      enemy.punch = Math.max(0, enemy.punch - dt * 6)
-      if (enemy.flash > 0) {
-        enemy.flash = Math.max(0, enemy.flash - dt * 5)
-        flashCharacter(enemy.build, enemy.flash)
-      }
 
       // billboard health bar
-      enemy.bar.visible = distance < 62
+      enemy.bar.visible = distance < 80
       if (enemy.bar.visible) {
-        enemy.bar.position.copy(enemy.pos).addScaledVector(enemy.up, 2.95)
+        enemy.bar.position.copy(enemy.pos).addScaledVector(enemy.up, enemy.rig.height + 0.5)
         enemy.bar.quaternion.copy(camera.quaternion)
         const scale = THREE.MathUtils.clamp(distance * 0.045, 0.9, 3)
         enemy.bar.scale.setScalar(scale)
@@ -247,22 +270,26 @@ export class EnemyManager {
         mat.color.copy(BAR_LOW).lerp(BAR_HIGH, ratio)
       }
 
+      // Pose: aiming while charging, idle otherwise. Locks let one-shot clips finish.
+      if (enemy.animLock <= 0) enemy.rig.play(enemy.alert > 0 ? 'Ranged_1H_Aiming' : 'Idle_A')
+
       // telegraph + shoot
       if (enemy.alert > 0) {
         enemy.alert -= dt
         enemy.alertSprite.visible = true
-        enemy.alertSprite.position.copy(enemy.pos).addScaledVector(enemy.up, 3.5)
+        enemy.alertSprite.position.copy(enemy.pos).addScaledVector(enemy.up, enemy.rig.height + 0.9)
         const s = 0.55 + Math.sin(time * 22) * 0.06
         enemy.alertSprite.scale.setScalar(s * THREE.MathUtils.clamp(distance * 0.04, 0.7, 2))
         if (enemy.alert <= 0) {
           enemy.alertSprite.visible = false
-          if (playerAlive && distance < 46 && hasLineOfSight(_muzzle(enemy), eye)) this.shoot(enemy, eye)
+          if (playerAlive && distance < 46 && this.canShoot(enemy, eye)) this.shoot(enemy, eye)
           enemy.cooldown = 2.9 + Math.random() * 2.8
         }
       } else {
         enemy.cooldown -= dt
-        if (enemy.cooldown <= 0 && playerAlive && distance < 42 && hasLineOfSight(_muzzle(enemy), eye)) {
-          enemy.alert = 0.7
+        if (enemy.cooldown <= 0 && playerAlive && distance < 42 && this.canShoot(enemy, eye)) {
+          enemy.alert = 0.75
+          enemy.rig.play('Ranged_1H_Aiming', { fade: 0.25 })
         }
       }
     }
@@ -270,18 +297,33 @@ export class EnemyManager {
     this.updateBullets(dt, eye, playerAlive, onPlayerHit)
   }
 
+  /** Curvature plus solid props: a rock or wall between us blocks the shot. */
+  private canShoot(enemy: Enemy, eye: THREE.Vector3) {
+    if (!hasLineOfSight(enemy.gunTip, eye)) return false
+    if (this.occluders.length === 0) return true
+    _dir.copy(eye).sub(enemy.gunTip)
+    const distance = _dir.length()
+    if (distance < 0.4) return true
+    _dir.divideScalar(distance)
+    this.ray.set(enemy.gunTip, _dir)
+    this.ray.far = distance - 0.35
+    return this.ray.intersectObjects(this.occluders, true).length === 0
+  }
+
   private shoot(enemy: Enemy, eye: THREE.Vector3) {
     const bullet = this.bullets.find((b) => !b.active)
     if (!bullet) return
+    enemy.rig.play('Ranged_1H_Shoot', { once: true, fade: 0.06 })
+    enemy.animLock = 0.5
     bullet.active = true
     bullet.life = 4.2
     bullet.trail = 0
-    _v2.copy(eye).sub(enemy.pos).normalize()
+    _v2.copy(eye).sub(enemy.gunTip).normalize()
     _v2.x += (Math.random() - 0.5) * 0.06
     _v2.y += (Math.random() - 0.5) * 0.06
     _v2.z += (Math.random() - 0.5) * 0.06
     _v2.normalize()
-    bullet.pos.copy(enemy.pos).addScaledVector(enemy.up, 1.55).addScaledVector(_v2, 0.55)
+    bullet.pos.copy(enemy.gunTip).addScaledVector(_v2, 0.25)
     bullet.mesh.position.copy(bullet.pos)
     bullet.mesh.visible = true
     bullet.vel.copy(_v2).multiplyScalar(17)
@@ -314,6 +356,22 @@ export class EnemyManager {
         this.fx.ring(bullet.pos, bullet.pos.clone().normalize(), COLORS.candy, 0.9)
         this.kill(bullet)
         continue
+      }
+
+      // prop hit
+      if (this.occluders.length > 0) {
+        _dir.copy(bullet.pos).sub(prev)
+        const step = _dir.length()
+        if (step > 0.001) {
+          _dir.divideScalar(step)
+          this.ray.set(prev, _dir)
+          this.ray.far = step
+          if (this.ray.intersectObjects(this.occluders, true).length > 0) {
+            this.fx.burst(bullet.pos, 6, { colors: [COLORS.candy, COLORS.white], speed: 2.4, size: 0.08, life: 0.28 })
+            this.kill(bullet)
+            continue
+          }
+        }
       }
 
       if (playerAlive) {

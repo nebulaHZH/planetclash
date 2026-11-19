@@ -16,7 +16,7 @@ export const COLORS = {
 
 /** First-person tuning. Units are metres-ish; radius is planet scale. */
 export const PHYSICS = {
-  radius: 40,
+  radius: 96,
   gravity: 25,
   walkSpeed: 6.8,
   sprintSpeed: 11.3,
@@ -26,7 +26,7 @@ export const PHYSICS = {
   fov: 74,
   adsFov: 52,
   near: 0.045,
-  far: 460,
+  far: 1000,
   sens: 0.0022,
 } as const
 
@@ -41,6 +41,7 @@ export const GAME = {
 } as const
 
 export type Hat = 'crown' | 'antenna' | 'cat' | 'mushroom' | 'tuft'
+export type CharacterModel = 'Knight' | 'Barbarian' | 'Mage' | 'Ranger' | 'Rogue' | 'Rogue_Hooded'
 export type Expression = 'happy' | 'focused' | 'hurt' | 'ko'
 
 export type CharacterConfig = {
@@ -53,6 +54,8 @@ export type CharacterConfig = {
   hat: Hat
   expression: Expression
   weaponSkin: string
+  /** KayKit character mesh used in game. */
+  model: CharacterModel
   speed: number
   health: number
   description: string
@@ -60,29 +63,34 @@ export type CharacterConfig = {
 
 export const CHARACTERS: CharacterConfig[] = [
   {
-    id: 'pudding', name: '布丁队长', role: '指挥官', headScale: 1.06,
-    bodyColor: COLORS.lemon, accentColor: COLORS.candy, hat: 'crown', expression: 'happy', weaponSkin: 'silver', speed: 1, health: 3,
-    description: '平衡型 · 憨憨的星球领队',
+    id: 'knight', name: '铁桶骑士', role: '队长', headScale: 1.06,
+    bodyColor: COLORS.sky, accentColor: COLORS.gold, hat: 'crown', expression: 'happy', weaponSkin: 'silver', model: 'Knight', speed: 1, health: 3,
+    description: '平衡型 · 队伍前排',
   },
   {
-    id: 'bobo', name: '啵啵', role: '弹跳手', headScale: 1.02,
-    bodyColor: COLORS.mint, accentColor: COLORS.sky, hat: 'tuft', expression: 'happy', weaponSkin: 'bubble', speed: 1.06, health: 3,
-    description: 'Q 弹史莱姆 · 跑得轻快',
+    id: 'barbarian', name: '蛮蛮', role: '狂战士', headScale: 1.04,
+    bodyColor: '#D9A16F', accentColor: COLORS.candy, hat: 'mushroom', expression: 'focused', weaponSkin: 'candy', model: 'Barbarian', speed: .94, health: 5,
+    description: '五颗爱心 · 扛打的重装',
   },
   {
-    id: 'rivet', name: '铆钉', role: '机械师', headScale: .98,
-    bodyColor: COLORS.sky, accentColor: COLORS.gold, hat: 'antenna', expression: 'focused', weaponSkin: 'spring', speed: .95, health: 3,
-    description: '天线机器人 · 后坐力更稳',
+    id: 'mage', name: '紫袍法师', role: '法师', headScale: .98,
+    bodyColor: '#8E7BD6', accentColor: COLORS.lemon, hat: 'mushroom', expression: 'focused', weaponSkin: 'bubble', model: 'Mage', speed: .96, health: 3,
+    description: '远程支援 · 弹药更多',
   },
   {
-    id: 'mia', name: '喵桑', role: '刺客', headScale: .9,
-    bodyColor: COLORS.white, accentColor: COLORS.candy, hat: 'cat', expression: 'happy', weaponSkin: 'pink', speed: 1.18, health: 3,
-    description: '猫耳刺客 · 全场最快',
+    id: 'ranger', name: '绿林游侠', role: '游侠', headScale: 1.0,
+    bodyColor: COLORS.mint, accentColor: COLORS.sky, hat: 'tuft', expression: 'happy', weaponSkin: 'spring', model: 'Ranger', speed: 1.08, health: 3,
+    description: '敏捷 · 移动速度 +8%',
   },
   {
-    id: 'dafu', name: '大福', role: '重装', headScale: 1.14,
-    bodyColor: '#FFAAC2', accentColor: COLORS.mint, hat: 'mushroom', expression: 'happy', weaponSkin: 'candy', speed: .82, health: 5,
-    description: '蘑菇团子 · 五颗爱心重装',
+    id: 'rogue', name: '喵影', role: '刺客', headScale: .96,
+    bodyColor: '#C0705B', accentColor: COLORS.candy, hat: 'cat', expression: 'happy', weaponSkin: 'pink', model: 'Rogue', speed: 1.16, health: 3,
+    description: '全场最快 · 打完就跑',
+  },
+  {
+    id: 'hooded', name: '夜砂', role: '潜行者', headScale: 1.0,
+    bodyColor: '#2E9E63', accentColor: COLORS.mint, hat: 'cat', expression: 'focused', weaponSkin: 'bubble', model: 'Rogue_Hooded', speed: 1.1, health: 4,
+    description: '四颗爱心 · 又肉又快',
   },
 ]
 

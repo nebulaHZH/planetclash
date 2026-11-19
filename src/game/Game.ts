@@ -7,8 +7,11 @@ import { WeaponSystem } from './weapons'
 import { EnemyManager, enemyHeadshot, enemyIdFrom, type Enemy } from './enemies'
 import { Fx } from './fx'
 import { GameAudio } from './audio'
+import { loadGameAssets } from './assets'
 
-const SPAWN = dirFromLatLon(6, -40)
+import { SPAWN_LATLON } from './landmarks'
+
+const SPAWN = dirFromLatLon(SPAWN_LATLON[0], SPAWN_LATLON[1])
 const _v = new THREE.Vector3()
 const _right = new THREE.Vector3()
 const _up = new THREE.Vector3()
@@ -47,6 +50,8 @@ export class Game {
   private invuln = 0
   private shake = 0
   private recoil = 0
+  private hitstop = 0
+  private slowmo = 0
   private sensitivity = 1
   private lookX = 0
   private lookY = 0
@@ -73,13 +78,26 @@ export class Game {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.7))
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.autoClear = false
+    this.renderer.shadowMap.enabled = true
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
     this.renderer.setClearColor('#1B1030', 1)
 
     this.scene.background = new THREE.Color('#1B1030')
     this.scene.add(new THREE.HemisphereLight('#FFF3FB', '#5A3C78', 1.3))
     this.key = new THREE.DirectionalLight('#FFF6E2', 2.4)
     this.key.position.set(26, 46, 18)
+    this.key.castShadow = true
+    this.key.shadow.mapSize.set(2048, 2048)
+    this.key.shadow.camera.near = 1
+    this.key.shadow.camera.far = 170
+    this.key.shadow.camera.left = -34
+    this.key.shadow.camera.right = 34
+    this.key.shadow.camera.top = 34
+    this.key.shadow.camera.bottom = -34
+    this.key.shadow.bias = -0.0006
+    this.key.shadow.normalBias = 0.025
     this.scene.add(this.key)
+    this.scene.add(this.key.target)
     this.fill = new THREE.DirectionalLight('#B79BFF', 0.55)
     this.fill.position.set(-34, -26, -22)
     this.scene.add(this.fill)
@@ -99,6 +117,17 @@ export class Game {
     })
     this.weapons.setCharacter(this.character)
     this.enemies = new EnemyManager(this.scene, this.fx, this.audio)
+    this.player.obstacles = this.world.obstacles
+    void this.world.loadProps().then(() => {
+      this.enemies.occluders = this.world.solids
+    })
+    void loadGameAssets().then((assets) => {
+      if (this.disposed) return
+      this.enemies.init(assets)
+      this.weapons.setGuns(assets.guns)
+      this.enemies.occluders = this.world.solids
+      this.emitHud()
+    })
 
     this.resize()
     this.bind()
@@ -130,6 +159,8 @@ export class Game {
     this.invuln = 0
     this.shake = 0
     this.recoil = 0
+    this.hitstop = 0
+    this.slowmo = 0
     this.lookX = 0
     this.lookY = 0
     this.pendingEnd = 0
@@ -403,20 +434,21 @@ export class Game {
   private updateMenu(dt: number) {
     this.menuTime += dt
     const angle = this.menuTime * 0.07
-    const radius = 120
-    this.camera.position.set(Math.cos(angle) * radius, 30 + Math.sin(this.menuTime * 0.3) * 4, Math.sin(angle) * radius)
+    const radius = PHYSICS.radius * 2.95
+    this.camera.position.set(Math.cos(angle) * radius, PHYSICS.radius * 0.62 + Math.sin(this.menuTime * 0.3) * 5, Math.sin(angle) * radius)
     this.camera.up.set(0, 1, 0)
     // Look slightly left of the planet so it is framed on the right of the menu card.
     _v.copy(this.camera.position).negate().normalize()
     _v2.crossVectors(_v, this.camera.up).normalize()
-    _v3.copy(_v2).multiplyScalar(-26)
+    _v3.copy(_v2).multiplyScalar(-30)
     this.camera.lookAt(_v3)
-    this.key.position.copy(this.camera.position).multiplyScalar(1.05).addScaledVector(_v2, 45)
-    this.key.position.y += 30
-    this.fill.position.copy(this.camera.position).multiplyScalar(0.9).addScaledVector(_v2, -70)
-    this.fill.position.y -= 20
-    this.key.intensity = 1.8
-    this.fill.intensity = 0.5
+    this.key.position.copy(this.camera.position).multiplyScalar(1.08)
+    this.key.position.y += 40
+    this.key.target.position.set(0, 0, 0)
+    this.key.target.updateMatrixWorld()
+    this.fill.position.copy(this.camera.position).multiplyScalar(0.55)
+    this.fill.intensity = 1.0
+    this.key.intensity = 2.2
     this.camera.fov = 52
     this.camera.updateProjectionMatrix()
     this.world.update(dt)
@@ -424,6 +456,15 @@ export class Game {
   }
 
   private simulate(dt: number) {
+    if (this.hitstop > 0) {
+      this.hitstop = Math.max(0, this.hitstop - dt)
+      this.fx.update(dt * 0.35)
+      return
+    }
+    if (this.slowmo > 0) {
+      this.slowmo = Math.max(0, this.slowmo - dt)
+      dt *= 0.34
+    }
     this.elapsed += dt
     this.invuln = Math.max(0, this.invuln - dt)
     this.shake = Math.max(0, this.shake - dt * 2.8)
@@ -501,6 +542,15 @@ export class Game {
     this.camera.up.copy(_up)
     this.camera.updateMatrixWorld()
 
+    if (this.running) {
+      this.key.target.position.copy(p.feet).addScaledVector(up, 1)
+      this.key.position.copy(this.key.target.position)
+        .addScaledVector(up, 44)
+        .addScaledVector(_right, 22)
+        .addScaledVector(_forward, 16)
+      this.key.target.updateMatrixWorld()
+    }
+
     const targetFov = this.aiming ? PHYSICS.adsFov : PHYSICS.fov + p.speedNorm * 2.5
     this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 11)
     this.camera.updateProjectionMatrix()
@@ -543,7 +593,11 @@ export class Game {
       this.raycaster.set(origin, direction)
       this.raycaster.far = weapon.range
       const enemyHit = this.raycaster.intersectObjects(groups, true)[0]
-      const worldHit = this.raycaster.intersectObject(this.world.planet, false)[0]
+      const planetHit = this.raycaster.intersectObject(this.world.planet, false)[0]
+      const propHit = this.world.solids.length > 0
+        ? this.raycaster.intersectObjects(this.world.solids, true)[0]
+        : undefined
+      const worldHit = propHit && (!planetHit || propHit.distance < planetHit.distance) ? propHit : planetHit
 
       let end = _v.copy(origin).addScaledVector(direction, weapon.range)
       if (enemyHit && (!worldHit || enemyHit.distance < worldHit.distance)) {
@@ -569,11 +623,15 @@ export class Game {
           })
           this.fx.flash(enemyHit.point, COLORS.lemon, head ? 1.3 : 0.85)
           this.showDamage(enemyHit.point, Math.round(damage), head)
+          this.hitstop = Math.max(this.hitstop, head ? 0.075 : 0.045)
+          this.shake = Math.min(1, this.shake + (head ? 0.34 : 0.18))
           if (killed) this.onKill(enemy, enemyHit.point, head)
         }
       } else if (worldHit) {
         end = worldHit.point
-        const normal = worldHit.face ? worldHit.face.normal.clone().transformDirection(this.world.planet.matrixWorld) : worldHit.point.clone().normalize()
+        const normal = worldHit.face
+          ? worldHit.face.normal.clone().transformDirection(worldHit.object.matrixWorld)
+          : worldHit.point.clone().normalize()
         this.fx.impact(worldHit.point, normal, weapon.color)
       }
       this.fx.tracer(muzzle, end.clone(), weapon.color)
@@ -589,6 +647,9 @@ export class Game {
     this.kills += 1
     this.weapons.giveAmmo(GAME.ammoReward)
     this.audio.kill()
+    this.hitstop = 0.12
+    this.slowmo = 0.42
+    this.shake = Math.min(1, this.shake + 0.55)
     this.fx.confettiBurst(point, enemy.up, 46)
     this.fx.marbles(point, enemy.up)
     this.fx.ring(point, enemy.up, COLORS.lemon, 2.1)
@@ -606,8 +667,9 @@ export class Game {
     if (!this.running || this.paused || this.ended || !this.player.alive) return
     if (this.invuln > 0) return
     this.invuln = GAME.invuln
+    this.hitstop = Math.max(this.hitstop, 0.05)
     this.player.health = Math.max(0, this.player.health - amount)
-    this.shake = Math.min(1, this.shake + 0.75)
+    this.shake = Math.min(1, this.shake + 0.9)
     this.audio.hurt()
     this.callbacks.onEvent({ kind: 'hurt', health: this.player.health })
     if (from) this.fx.burst(from, 5, { colors: [COLORS.candy, COLORS.white], speed: 2, size: 0.07, life: 0.3 })

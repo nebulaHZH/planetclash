@@ -1,6 +1,8 @@
 import * as THREE from 'three'
 import { COLORS, PHYSICS } from '../config'
 import { flagTexture, gradientMap, outlined, radialTexture, signTexture, toon } from './toon'
+import { loadPropAssets, seeded, type Obstacle, type PropAsset, type PropKind } from './props'
+import { ENEMY_SPAWNS, PAD_SPAWNS, SPAWN_LATLON } from './landmarks'
 
 const R = PHYSICS.radius
 const Y = new THREE.Vector3(0, 1, 0)
@@ -18,11 +20,27 @@ export function dirFromLatLon(latDeg: number, lonDeg: number): THREE.Vector3 {
 export function surfaceRadius(dir: THREE.Vector3): number {
   _n.copy(dir).normalize()
   const n =
-    Math.sin(_n.x * 11 + _n.z * 6.5) * 1.15 +
-    Math.sin(_n.y * 17 + _n.x * 4) * 0.7 +
-    Math.sin((_n.x + _n.y + _n.z) * 31) * 0.22 +
-    Math.sin(_n.z * 7 - _n.y * 5) * 0.55
-  return R + 2.4 + n
+    Math.sin(_n.x * 11 + _n.z * 6.5) * 1.95 +
+    Math.sin(_n.y * 17 + _n.x * 4) * 1.18 +
+    Math.sin((_n.x + _n.y + _n.z) * 31) * 0.34 +
+    Math.sin(_n.z * 7 - _n.y * 5) * 0.92
+  return R + 3.4 + n
+}
+
+/** Analytic surface normal, so props stand flat on hills instead of the radial. */
+export function surfaceNormal(dir: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+  const up = Math.abs(dir.y) > 0.95 ? new THREE.Vector3(1, 0, 0) : Y
+  const t1 = new THREE.Vector3().crossVectors(up, dir).normalize()
+  const t2 = new THREE.Vector3().crossVectors(dir, t1).normalize()
+  const eps = 0.0025
+  const p0 = dir.clone().multiplyScalar(surfaceRadius(dir))
+  const d1 = dir.clone().addScaledVector(t1, eps).normalize()
+  const d2 = dir.clone().addScaledVector(t2, eps).normalize()
+  const p1 = d1.clone().multiplyScalar(surfaceRadius(d1))
+  const p2 = d2.clone().multiplyScalar(surfaceRadius(d2))
+  out.crossVectors(p1.clone().sub(p0), p2.clone().sub(p0)).normalize()
+  if (out.dot(dir) < 0) out.negate()
+  return out
 }
 
 const MEADOW = new THREE.Color('#8FE4C2')
@@ -70,6 +88,12 @@ type Floater = { obj: THREE.Object3D; base: THREE.Vector3; axis: THREE.Vector3; 
 export class World {
   planet: THREE.Mesh
   pads: CapturePad[] = []
+  /** Solid props the player bumps into and bullets stop on. */
+  obstacles: Obstacle[] = []
+  solids: THREE.Object3D[] = []
+  propsReady = false
+  private scene: THREE.Scene
+  private propLoad: Promise<void> | null = null
   private spinners: Spinner[] = []
   private floaters: Floater[] = []
   private sky: THREE.Group
@@ -77,6 +101,7 @@ export class World {
   private mats: Record<string, THREE.MeshToonMaterial>
 
   constructor(scene: THREE.Scene) {
+    this.scene = scene
     this.mats = {
       mint: toon(COLORS.mint),
       candy: toon(COLORS.candy),
@@ -109,6 +134,226 @@ export class World {
     scene.add(this.sky)
   }
 
+  /** Scatter CC0 Kenney props for cover. Keeps spawn, pads and enemies clear. */
+  loadProps() {
+    if (this.propLoad) return this.propLoad
+    this.propLoad = (async () => {
+      const assets = await loadPropAssets()
+      const rng = seeded(20260601)
+      const spawn = dirFromLatLon(SPAWN_LATLON[0], SPAWN_LATLON[1])
+      const pads = PAD_SPAWNS.map(([lat, lon]) => dirFromLatLon(lat, lon))
+      const enemies = ENEMY_SPAWNS.map(([lat, lon]) => dirFromLatLon(lat, lon))
+      const t1 = new THREE.Vector3().crossVectors(Y, spawn).normalize()
+      const t2 = new THREE.Vector3().crossVectors(spawn, t1).normalize()
+      const group = new THREE.Group()
+      group.name = 'cover'
+      const placed: { dir: THREE.Vector3; radius: number }[] = []
+      const normal = new THREE.Vector3()
+
+      const kinds: [PropKind, number, number, number][] = [
+        ['tree', 26, 1.6, 2.4],
+        ['rock', 34, 1.4, 2.3],
+        ['block', 14, 1.8, 2.4],
+        ['wall', 18, 2.0, 2.6],
+        ['column', 10, 2.2, 2.7],
+        ['barricade', 14, 1.8, 2.2],
+        ['bush', 24, 1.5, 2.4],
+      ]
+
+      for (const [kind, count, minScale, maxScale] of kinds) {
+        const list = assets.get(kind) ?? []
+        if (list.length === 0) continue
+        for (let i = 0; i < count; i++) {
+          let dir = new THREE.Vector3()
+          let asset = list[0]
+          let scale = minScale
+          let radius = 0.5
+          let ok = false
+          for (let attempt = 0; attempt < 48 && !ok; attempt++) {
+            const angle = rng() * Math.PI * 2
+            const distance = 0.03 + 0.56 * Math.sqrt(rng())
+            dir.copy(spawn).multiplyScalar(Math.cos(distance))
+              .addScaledVector(t1, Math.cos(angle) * Math.sin(distance))
+              .addScaledVector(t2, Math.sin(angle) * Math.sin(distance))
+              .normalize()
+            scale = minScale + (maxScale - minScale) * rng()
+            asset = list[(rng() * list.length) | 0]
+            radius = asset.footprint * scale * 0.75
+            if (dir.angleTo(spawn) * R < 4.2 + radius) continue
+            if (pads.some((pad) => dir.angleTo(pad) * R < 5 + radius)) continue
+            if (enemies.some((e) => dir.angleTo(e) * R < 3.5 + radius)) continue
+            if (placed.some((p) => dir.angleTo(p.dir) * R < p.radius + radius + 0.9)) continue
+            ok = true
+          }
+          if (!ok) continue
+
+          const outer = new THREE.Group()
+          outer.position.copy(dir).multiplyScalar(surfaceRadius(dir))
+          surfaceNormal(dir, normal)
+          outer.quaternion.setFromUnitVectors(Y, normal)
+          const model = asset.scene.clone(true)
+          model.scale.setScalar(scale)
+          model.rotation.y = rng() * Math.PI * 2
+          model.position.y -= 0.05
+          outer.add(model)
+          group.add(outer)
+          placed.push({ dir: dir.clone(), radius })
+          if (kind !== 'bush') {
+            this.obstacles.push({ dir: dir.clone(), radius, height: asset.height * scale * 0.9 })
+            this.solids.push(outer)
+          }
+        }
+      }
+
+      // Deliberate cover near the landing site: real wall lines, crate stacks and columns.
+      // Everything is laid out in metres on the local tangent plane around the spawn.
+      const east = new THREE.Vector3().crossVectors(spawn, Y).normalize()
+      const north = new THREE.Vector3().crossVectors(east, spawn).normalize()
+      const at = (e: number, n: number) =>
+        spawn.clone().addScaledVector(east, e / R).addScaledVector(north, n / R).normalize()
+
+      const attach = (
+        asset: PropAsset,
+        kind: PropKind,
+        dir: THREE.Vector3,
+        scale: number,
+        along?: THREE.Vector3,
+        longAxis: 'x' | 'z' = 'z',
+        lift = 0,
+      ) => {
+        const outer = new THREE.Group()
+        outer.position.copy(dir).multiplyScalar(surfaceRadius(dir))
+        const up = surfaceNormal(dir, new THREE.Vector3())
+        const forward = (along ?? east).clone().projectOnPlane(up)
+        if (forward.lengthSq() < 1e-5) forward.copy(north)
+        forward.normalize()
+        if (longAxis === 'z') {
+          const side = new THREE.Vector3().crossVectors(up, forward).normalize()
+          outer.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(side, up, forward))
+        } else {
+          const side = new THREE.Vector3().crossVectors(forward, up).normalize()
+          outer.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(forward, up, side))
+        }
+        const model = asset.scene.clone(true)
+        model.scale.setScalar(scale)
+        model.position.y += lift - 0.03
+        outer.add(model)
+        group.add(outer)
+        this.solids.push(outer)
+
+        const height = asset.height * scale * 0.9
+        if (kind === 'wall' || kind === 'barricade') {
+          // Long thin walls get three circles so you cannot walk through the ends.
+          const half = asset.footprint * scale * 0.85
+          const axis = (longAxis === 'z' ? forward : forward).clone()
+          for (const k of [-1, 0, 1]) {
+            const a = (k * half) / R
+            const cdir = dir.clone().multiplyScalar(Math.cos(a)).addScaledVector(axis, Math.sin(a)).normalize()
+            this.obstacles.push({ dir: cdir, radius: 0.5, height })
+          }
+        } else {
+          this.obstacles.push({ dir: dir.clone(), radius: asset.footprint * scale * 0.9 + 0.12, height })
+        }
+        return outer
+      }
+
+      const wallLine = (e0: number, n0: number, e1: number, n1: number, scale: number) => {
+        const wallAssets = assets.get('wall') ?? []
+        if (wallAssets.length === 0) return
+        const asset = wallAssets[0]
+        const a = at(e0, n0)
+        const b = at(e1, n1)
+        const along = new THREE.Vector3().subVectors(b, a).normalize()
+        const length = Math.hypot(e1 - e0, n1 - n0)
+        const count = Math.max(1, Math.round(length / (scale * 0.98)))
+        for (let i = 0; i < count; i++) {
+          const t = (i + 0.5) / count
+          attach(asset, 'wall', at(e0 + (e1 - e0) * t, n0 + (n1 - n0) * t), scale, along, 'x')
+        }
+      }
+
+      // Two chunky wall lines screen the landing site without blocking the arch view.
+      wallLine(13, -18, 13, -2, 2.1)
+      wallLine(-13, -13, -13, 5, 2.1)
+      wallLine(-4, 21, 9, 21, 2.1)
+
+      // Crate stacks to hop on and shoot over.
+      const blocks = assets.get('block') ?? []
+      if (blocks.length) {
+        attach(blocks[0], 'block', at(7.5, 3.5), 1.6)
+        attach(blocks[0], 'block', at(7.4, 5.1), 1.3)
+        attach(blocks[0], 'block', at(7.6, 4.3), 1.3, undefined, 'z', 0.66)
+        attach(blocks[1] ?? blocks[0], 'block', at(-7, 10), 1.5)
+        attach(blocks[0], 'block', at(-7.9, 11.2), 1.2)
+      }
+
+      // Columns flanking the rainbow arch.
+      const columns = assets.get('column') ?? []
+      if (columns.length) {
+        attach(columns[0], 'column', at(3, 14), 2.6)
+        attach(columns[1] ?? columns[0], 'column', at(15.5, 13), 2.4)
+        attach(columns[0], 'column', at(-4, -20), 2.2)
+      }
+
+      const wallArc = (center: THREE.Vector3, radiusM: number, from: number, to: number, scale: number) => {
+        const wallAssets = assets.get('wall') ?? []
+        if (wallAssets.length === 0) return
+        const asset = wallAssets[0]
+        const te = new THREE.Vector3().crossVectors(center, Y).normalize()
+        const tn = new THREE.Vector3().crossVectors(te, center).normalize()
+        const span = (to - from) * (Math.PI / 180)
+        const step = (scale * 1.02) / radiusM
+        const count = Math.max(2, Math.round(Math.abs(span) / step))
+        for (let i = 0; i < count; i++) {
+          const a = from * (Math.PI / 180) + (span * (i + 0.5)) / count
+          const dir = center
+            .clone()
+            .multiplyScalar(Math.cos(radiusM / R))
+            .addScaledVector(te, Math.sin(radiusM / R) * Math.cos(a))
+            .addScaledVector(tn, Math.sin(radiusM / R) * Math.sin(a))
+            .normalize()
+          const along = new THREE.Vector3().crossVectors(te, tn).normalize()
+          const tangent = tn.clone().multiplyScalar(-Math.sin(a)).addScaledVector(te, Math.cos(a)).normalize()
+          attach(asset, 'wall', dir, scale, tangent.lengthSq() > 0.1 ? tangent : along, 'x')
+        }
+      }
+
+      // Each capture point gets a low ruined wall on one side, so fights have cover.
+      PAD_SPAWNS.forEach(([lat, lon], i) => {
+        const center = dirFromLatLon(lat, lon)
+        wallArc(center, 8.5, 215 + i * 45, 292 + i * 45, 2.0)
+        const blocks2 = assets.get('block') ?? []
+        if (blocks2.length) {
+          const te = new THREE.Vector3().crossVectors(center, Y).normalize()
+          const tn = new THREE.Vector3().crossVectors(te, center).normalize()
+          for (let k = 0; k < 2; k++) {
+            const a = (i * 1.7 + k * 0.5 + 0.4) * Math.PI
+            const dir = center
+              .clone()
+              .multiplyScalar(Math.cos(5.6 / R))
+              .addScaledVector(te, Math.sin(5.6 / R) * Math.cos(a))
+              .addScaledVector(tn, Math.sin(5.6 / R) * Math.sin(a))
+              .normalize()
+            attach(blocks2[k % blocks2.length], 'block', dir, 1.4 + k * 0.2)
+          }
+        }
+      })
+
+      // Barricade row on the north approach to capture pad A.
+      const barricades = assets.get('barricade') ?? []
+      if (barricades.length) {
+        for (let i = 0; i < 4; i++) {
+          const dir = at(-16 + i * 3.1, 36)
+          attach(barricades[i % barricades.length], 'barricade', dir, 1.9, east, 'z')
+        }
+      }
+
+      this.scene.add(group)
+      this.propsReady = true
+    })()
+    return this.propLoad
+  }
+
   resetPads() {
     for (const pad of this.pads) {
       pad.progress = 0
@@ -119,7 +364,7 @@ export class World {
   }
 
   private buildPlanet() {
-    const geo = new THREE.IcosahedronGeometry(1, 5)
+    const geo = new THREE.IcosahedronGeometry(1, 6)
     const pos = geo.attributes.position
     const colors = new Float32Array(pos.count * 3)
     const dir = new THREE.Vector3()
@@ -141,9 +386,10 @@ export class World {
     })
     const mesh = new THREE.Mesh(geo, material)
     mesh.name = 'planet'
+    mesh.receiveShadow = true
 
     const glow = new THREE.Mesh(
-      new THREE.SphereGeometry(R + 7, 32, 20),
+      new THREE.SphereGeometry(R + 11, 32, 20),
       new THREE.MeshBasicMaterial({ color: COLORS.candy, transparent: true, opacity: 0.055, side: THREE.BackSide, depthWrite: false }),
     )
     mesh.add(glow)
@@ -436,15 +682,15 @@ export class World {
       scene.add(mesh)
     }
 
-    scatter(6000, new THREE.ConeGeometry(0.045, 0.26, 5), 0.12, [0.6, 1.3], [0.6, 1.2], grassTones)
-    scatter(900, new THREE.IcosahedronGeometry(0.085, 0), 0.07, [0.6, 1], [0.7, 1.4], flowerTones)
-    scatter(420, new THREE.DodecahedronGeometry(0.13, 0), 0.06, [0.35, 0.6], [0.5, 0.9], pebbleTones)
+    scatter(18000, new THREE.ConeGeometry(0.055, 0.34, 5), 0.14, [0.6, 1.3], [0.6, 1.2], grassTones)
+    scatter(2600, new THREE.IcosahedronGeometry(0.085, 0), 0.07, [0.6, 1], [0.7, 1.4], flowerTones)
+    scatter(1100, new THREE.DodecahedronGeometry(0.13, 0), 0.06, [0.35, 0.6], [0.5, 0.9], pebbleTones)
 
     // Extra density around the landing site so the opening shot has readable ground detail.
     const landing = dirFromLatLon(6, -40)
-    scatter(1500, new THREE.ConeGeometry(0.045, 0.26, 5), 0.12, [0.6, 1.3], [0.6, 1.2], grassTones, landing)
-    scatter(850, new THREE.IcosahedronGeometry(0.085, 0), 0.07, [0.6, 1], [0.7, 1.4], flowerTones, landing)
-    scatter(480, new THREE.DodecahedronGeometry(0.14, 0), 0.06, [0.35, 0.6], [0.6, 1.3], pebbleTones, landing)
+    scatter(4600, new THREE.ConeGeometry(0.062, 0.4, 5), 0.16, [0.6, 1.3], [0.6, 1.2], grassTones, landing)
+    scatter(2400, new THREE.IcosahedronGeometry(0.085, 0), 0.07, [0.6, 1], [0.7, 1.4], flowerTones, landing)
+    scatter(1400, new THREE.DodecahedronGeometry(0.14, 0), 0.06, [0.35, 0.6], [0.6, 1.3], pebbleTones, landing)
   }
 
   private addMeadow(parent: THREE.Group) {
@@ -555,7 +801,7 @@ export class World {
   }
 
   private addPads(scene: THREE.Scene) {
-    const padDirs = [dirFromLatLon(24, -46), dirFromLatLon(-20, 72)]
+    const padDirs = PAD_SPAWNS.map(([lat, lon]) => dirFromLatLon(lat, lon))
     for (const dir of padDirs) {
       const g = new THREE.Group()
       const base = new THREE.Mesh(new THREE.CylinderGeometry(2.5, 2.9, 0.5, 32), this.mats.purple)
@@ -615,7 +861,7 @@ export class World {
     }
     starGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
     starGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-    const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ size: 1.3, vertexColors: true, transparent: true, opacity: 0.9, depthWrite: false, sizeAttenuation: true }))
+    const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ size: 2.6, vertexColors: true, transparent: true, opacity: 0.9, depthWrite: false, sizeAttenuation: true }))
     sky.add(stars)
 
     const far = new THREE.Mesh(
@@ -660,6 +906,8 @@ export class World {
     ribbon.rotation.set(1.1, 0.2, 0.7)
     sky.add(ribbon)
 
+    // Push the whole backdrop outside the larger planet while keeping its apparent size.
+    sky.scale.setScalar(2)
     return sky
   }
 
