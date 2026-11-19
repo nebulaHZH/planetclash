@@ -1,6 +1,6 @@
 import * as THREE from 'three'
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { COLORS } from '../config'
+import { bakeGroup } from './bake'
 import { toon } from './toon'
 
 /**
@@ -53,51 +53,10 @@ function materials(): Mats {
   return out
 }
 
-let coverMat: THREE.MeshToonMaterial | null = null
-function bakedMaterial() {
-  if (!coverMat) {
-    coverMat = toon(COLORS.white)
-    coverMat.vertexColors = true
-  }
-  return coverMat
-}
-
 type Rnd = () => number
 const pick = <T>(rnd: Rnd, list: T[]): T => list[(rnd() * list.length) | 0]
 
 const box = (w: number, h: number, d: number, m: THREE.Material) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m)
-
-/** Flatten a small group of coloured meshes into one vertex-coloured geometry. */
-function bake(group: THREE.Group): THREE.Mesh {
-  group.updateMatrixWorld(true)
-  const parts: THREE.BufferGeometry[] = []
-  group.traverse((child) => {
-    const mesh = child as THREE.Mesh
-    if (!mesh.isMesh) return
-    const geo = mesh.geometry.clone().applyMatrix4(mesh.matrixWorld)
-    geo.deleteAttribute('uv')
-    geo.deleteAttribute('uv1')
-    const flat = geo.index ? geo.toNonIndexed() : geo
-    if (flat !== geo) geo.dispose()
-    const color = (mesh.material as THREE.MeshToonMaterial).color
-    const count = flat.attributes.position.count
-    const colors = new Float32Array(count * 3)
-    for (let i = 0; i < count; i++) {
-      colors[i * 3] = color.r
-      colors[i * 3 + 1] = color.g
-      colors[i * 3 + 2] = color.b
-    }
-    flat.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-    parts.push(flat)
-  })
-  const merged = mergeGeometries(parts, false)!
-  for (const part of parts) part.dispose()
-  merged.computeBoundingSphere()
-  const mesh = new THREE.Mesh(merged, bakedMaterial())
-  mesh.castShadow = true
-  mesh.receiveShadow = true
-  return mesh
-}
 
 const TREE_TONES: MatKey[] = ['candy', 'mint', 'sky', 'lavender', 'lemon', 'peach']
 
@@ -121,7 +80,7 @@ function tree(i: number): CoverAsset {
   const knot = new THREE.Mesh(new THREE.SphereGeometry(0.17, 9, 7), M.lemon)
   knot.position.y = 2.92
   g.add(knot)
-  return { scene: bake(g), footprint: 0.95, height: 3.1 }
+  return { scene: bakeGroup(g), footprint: 0.95, height: 3.1 }
 }
 
 /** Gumdrop rock: faceted blob plus a small companion. */
@@ -136,7 +95,7 @@ function rock(rnd: Rnd): CoverAsset {
   const small = new THREE.Mesh(new THREE.DodecahedronGeometry(0.24, 0), M.choco)
   small.position.set(0.44, 0.16, 0.24)
   g.add(small)
-  return { scene: bake(g), footprint: 0.68, height: 0.72 }
+  return { scene: bakeGroup(g), footprint: 0.68, height: 0.72 }
 }
 
 /** Candy crate: banded box with a white ribbon, made to stack. */
@@ -156,7 +115,7 @@ function crate(rnd: Rnd): CoverAsset {
   const lid = box(s * 1.02, 0.1, s * 1.02, M.white)
   lid.position.y = s - 0.01
   g.add(lid)
-  return { scene: bake(g), footprint: 0.48, height: s }
+  return { scene: bakeGroup(g), footprint: 0.48, height: s }
 }
 
 /** Candy-cane fence segment, long axis on X. */
@@ -177,7 +136,7 @@ function wall(rnd: Rnd): CoverAsset {
     plank.position.y = y
     g.add(plank)
   }
-  return { scene: bake(g), footprint: half + 0.09, height: 1.12 }
+  return { scene: bakeGroup(g), footprint: half + 0.09, height: 1.12 }
 }
 
 /** Candy column: fluted shaft, white collar, gold ball. */
@@ -202,7 +161,7 @@ function column(): CoverAsset {
   const ball = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), M.gold)
   ball.position.y = 1.94
   g.add(ball)
-  return { scene: bake(g), footprint: 0.4, height: 2.16 }
+  return { scene: bakeGroup(g), footprint: 0.4, height: 2.16 }
 }
 
 /** Gumdrop barricade: a solid row of fat sweets on a white plinth, long axis X. */
@@ -223,7 +182,7 @@ function barricade(rnd: Rnd): CoverAsset {
     tip.position.set(x, 0.6, 0)
     g.add(tip)
   }
-  return { scene: bake(g), footprint: 0.78, height: 0.82 }
+  return { scene: bakeGroup(g), footprint: 0.78, height: 0.82 }
 }
 
 /** Squat berry bush: three mint blobs and a few candy dots. */
@@ -247,7 +206,7 @@ function bush(rnd: Rnd, i: number): CoverAsset {
     dot.position.set((rnd() - 0.5) * 0.6, 0.42 + rnd() * 0.16, (rnd() - 0.5) * 0.5)
     g.add(dot)
   }
-  return { scene: bake(g), footprint: 0.52, height: 0.68 }
+  return { scene: bakeGroup(g), footprint: 0.52, height: 0.68 }
 }
 
 const BUILDERS: Record<CoverKind, (rnd: Rnd, i: number) => CoverAsset> = {

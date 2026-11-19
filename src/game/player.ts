@@ -8,6 +8,8 @@ export type MoveInput = {
   strafe: number
   sprint: boolean
   aim: boolean
+  /** Held down: keeps the jump tall. Tapping gives a short hop. */
+  jumpHeld: boolean
 }
 
 const _up = new THREE.Vector3(0, 1, 0)
@@ -35,7 +37,9 @@ export class Player {
   obstacles: Obstacle[] = []
   private sprintLock = false
   private regenDelay = 0
-  private jumpQueued = false
+  private jumpBuffer = 0
+  private coyote = 0
+  private cutApplied = true
 
   constructor(spawn: THREE.Vector3) {
     this.reset(spawn, 3, 1)
@@ -64,7 +68,9 @@ export class Player {
     this.landDip = 0
     this.landImpact = 0
     this.jumpedThisFrame = false
-    this.jumpQueued = false
+    this.jumpBuffer = 0
+    this.coyote = 0
+    this.cutApplied = true
   }
 
   get surface() {
@@ -87,7 +93,22 @@ export class Player {
   }
 
   jump() {
-    this.jumpQueued = true
+    this.jumpBuffer = 0.14
+  }
+
+  /** Highest solid top under the feet, or 0 for the terrain itself. */
+  private supportLevel() {
+    if (this.obstacles.length === 0) return 0
+    let best = 0
+    for (const obstacle of this.obstacles) {
+      // Too tall to be a floor from here: it is a wall, and `collide` handles it.
+      if (obstacle.height > this.alt + 0.35) continue
+      if (obstacle.height <= best) continue
+      const dot = THREE.MathUtils.clamp(this.dir.dot(obstacle.dir), -1, 1)
+      if (Math.acos(dot) * PHYSICS.radius > obstacle.radius + 0.3) continue
+      best = obstacle.height
+    }
+    return best
   }
 
   update(dt: number, input: MoveInput) {
@@ -141,32 +162,49 @@ export class Player {
       this.heading.normalize()
     }
 
-    this.collide()
+    // Crates, fence rails and barricades are standable: anything solid under
+    // the feet becomes the floor, so the jump can get you on top of them.
+    const floor = this.supportLevel()
 
-    if (this.jumpQueued) {
-      this.jumpQueued = false
-      if (this.grounded) {
-        this.grounded = false
-        this.velY = PHYSICS.jumpSpeed
-        this.alt = 0.02
-        this.jumpedThisFrame = true
-      }
+    this.jumpBuffer = Math.max(0, this.jumpBuffer - dt)
+    if (this.jumpBuffer > 0 && (this.grounded || this.coyote > 0)) {
+      this.jumpBuffer = 0
+      this.coyote = 0
+      this.grounded = false
+      this.cutApplied = false
+      this.velY = PHYSICS.jumpSpeed
+      this.alt = Math.max(this.alt, floor) + 0.02
+      this.jumpedThisFrame = true
+    }
+
+    // Letting go early trims the arc, which is most of what sells the weight.
+    if (!this.cutApplied && !input.jumpHeld && this.velY > 0) {
+      this.velY *= PHYSICS.jumpCut
+      this.cutApplied = true
     }
 
     if (!this.grounded) {
-      this.velY -= PHYSICS.gravity * dt
+      const pull = this.velY > 0 ? PHYSICS.gravity : PHYSICS.gravityFall
+      this.velY = Math.max(-PHYSICS.terminal, this.velY - pull * dt)
       this.alt += this.velY * dt
-      if (this.alt <= 0) {
+      if (this.velY <= 0 && this.alt <= floor) {
         this.landImpact = Math.abs(this.velY)
-        this.alt = 0
+        this.alt = floor
         this.velY = 0
         this.grounded = true
         this.landDip = Math.min(0.32, this.landImpact * 0.032)
       }
+    } else if (this.alt > floor + 0.04) {
+      // Stepped off a ledge: fall instead of dragging the floor up with us.
+      this.grounded = false
+      this.velY = 0
     } else {
-      this.alt = 0
+      this.alt = floor
       this.velY = 0
     }
+
+    this.coyote = this.grounded ? 0.12 : Math.max(0, this.coyote - dt)
+    this.collide()
 
     this.landDip += (0 - this.landDip) * Math.min(1, dt * 11)
 
@@ -182,7 +220,8 @@ export class Player {
     if (this.obstacles.length === 0) return
     for (let pass = 0; pass < 2; pass++) {
       for (const obstacle of this.obstacles) {
-        if (this.alt > obstacle.height) continue
+        // Above the top: this is a floor now, not a wall.
+        if (this.alt >= obstacle.height - 0.15) continue
         const dot = THREE.MathUtils.clamp(this.dir.dot(obstacle.dir), -1, 1)
         const arc = Math.acos(dot) * PHYSICS.radius
         const min = obstacle.radius + 0.42

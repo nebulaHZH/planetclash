@@ -474,7 +474,7 @@ export class Game {
     const strafe = (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) - (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0)
     const sprint = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')
 
-    this.player.update(dt, { forward, strafe, sprint, aim: this.aiming })
+    this.player.update(dt, { forward, strafe, sprint, aim: this.aiming, jumpHeld: this.keys.has('Space') })
 
     if (this.player.jumpedThisFrame) {
       this.audio.jump()

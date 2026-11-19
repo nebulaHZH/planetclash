@@ -17,11 +17,17 @@ export const COLORS = {
 /** First-person tuning. Units are metres-ish; radius is planet scale. */
 export const PHYSICS = {
   radius: 96,
-  gravity: 25,
+  /** Rising gravity, and the heavier pull on the way down. */
+  gravity: 32,
+  gravityFall: 46,
+  /** Terminal fall speed, so a long drop still reads as a drop. */
+  terminal: 34,
+  /** Releasing jump early keeps this share of the upwards speed. */
+  jumpCut: 0.55,
   walkSpeed: 6.8,
   sprintSpeed: 11.3,
   aimSpeed: 3.7,
-  jumpSpeed: 8.6,
+  jumpSpeed: 11.6,
   eyeHeight: 1.6,
   fov: 74,
   adsFov: 52,
@@ -40,8 +46,11 @@ export const GAME = {
   maxParticles: 420,
 } as const
 
-export type Hat = 'crown' | 'antenna' | 'cat' | 'mushroom' | 'tuft'
-export type CharacterModel = 'Knight' | 'Barbarian' | 'Mage' | 'Ranger' | 'Rogue' | 'Rogue_Hooded'
+export type Hat = 'crown' | 'antenna' | 'cat' | 'mushroom' | 'tuft' | 'bean' | 'horn' | 'snout'
+/** KayKit GLB models, plus the hand-built guest mascots in `guests.ts`. */
+export type CharacterModel =
+  | 'Knight' | 'Barbarian' | 'Mage' | 'Ranger' | 'Rogue' | 'Rogue_Hooded'
+  | 'Chiikawa' | 'Nailong' | 'GGBond'
 export type Expression = 'happy' | 'focused' | 'hurt' | 'ko'
 
 export type CharacterConfig = {
@@ -59,6 +68,8 @@ export type CharacterConfig = {
   speed: number
   health: number
   description: string
+  /** Procedural guest mascot: always part of the enemy cast. */
+  guest?: boolean
 }
 
 export const CHARACTERS: CharacterConfig[] = [
@@ -91,6 +102,21 @@ export const CHARACTERS: CharacterConfig[] = [
     id: 'hooded', name: '夜砂', role: '潜行者', headScale: 1.0,
     bodyColor: '#2E9E63', accentColor: COLORS.mint, hat: 'cat', expression: 'focused', weaponSkin: 'bubble', model: 'Rogue_Hooded', speed: 1.1, health: 4,
     description: '四颗爱心 · 又肉又快',
+  },
+  {
+    id: 'chiikawa', name: '吉伊卡哇', role: '团宠', headScale: 1, guest: true,
+    bodyColor: COLORS.white, accentColor: COLORS.candy, hat: 'bean', expression: 'happy', weaponSkin: 'candy', model: 'Chiikawa', speed: 1.06, health: 3,
+    description: '三颗爱心 · 跑得最快的小可爱',
+  },
+  {
+    id: 'nailong', name: '奶龙', role: '胖龙', headScale: 1, guest: true,
+    bodyColor: '#FFE0A0', accentColor: COLORS.lemon, hat: 'horn', expression: 'happy', weaponSkin: 'gold', model: 'Nailong', speed: .92, health: 5,
+    description: '五颗爱心 · 圆滚滚的肉盾',
+  },
+  {
+    id: 'ggbond', name: '猪猪侠', role: '超级英雄', headScale: 1, guest: true,
+    bodyColor: '#FFB4C8', accentColor: COLORS.gold, hat: 'snout', expression: 'focused', weaponSkin: 'pink', model: 'GGBond', speed: 1, health: 4,
+    description: '四颗爱心 · 披风一披就上场',
   },
 ]
 

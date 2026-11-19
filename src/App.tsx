@@ -21,6 +21,9 @@ const HAT_GLYPH: Record<string, string> = {
   cat: 'ᐛ',
   mushroom: '☁',
   tuft: '❀',
+  bean: '🐹',
+  horn: '🐲',
+  snout: '🐷',
 }
 
 const SENS_KEY = 'planetclash.sens'

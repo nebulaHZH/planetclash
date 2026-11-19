@@ -4,6 +4,8 @@ import { alertTexture, radialTexture } from './toon'
 import { dirFromLatLon, surfaceRadius } from './world'
 import { ENEMY_SPAWNS } from './landmarks'
 import { CharacterRig } from './rig'
+import { ToonRig } from './toonrig'
+import { isGuest } from './guests'
 import type { GameAssets } from './assets'
 import type { Fx } from './fx'
 import type { GameAudio } from './audio'
@@ -21,7 +23,7 @@ type Bullet = {
 export type Enemy = {
   id: number
   config: CharacterConfig
-  rig: CharacterRig
+  rig: CharacterRig | ToonRig
   group: THREE.Group
   anchor: THREE.Vector3
   health: number
@@ -96,12 +98,21 @@ export class EnemyManager {
   init(assets: GameAssets) {
     if (this.ready) return
     this.ready = true
+    // The three guest mascots are always on the field; the KayKit cast fills in
+    // behind them, so every match shows the new faces.
+    const cast = [...CHARACTERS.filter((c) => c.guest), ...CHARACTERS.filter((c) => !c.guest)]
     ENEMY_SPAWNS.forEach(([lat, lon], index) => {
-      const config = CHARACTERS[(index + 1) % CHARACTERS.length]
-      const source = assets.characters.get(config.model)
-      if (!source) return
-      const rig = new CharacterRig(source, assets.clips, config.health > 3 ? 0.8 : 0.74)
-      rig.setGun(assets.guns[index % assets.guns.length])
+      const config = cast[index % cast.length]
+      const gun = assets.guns[index % assets.guns.length]
+      let rig: CharacterRig | ToonRig
+      if (isGuest(config.model)) {
+        rig = new ToonRig(config)
+      } else {
+        const source = assets.characters.get(config.model)
+        if (!source) return
+        rig = new CharacterRig(source, assets.clips, config.health > 3 ? 0.8 : 0.74)
+      }
+      rig.setGun(gun)
       const group = rig.root
       group.userData.enemyId = index
       this.scene.add(group)
