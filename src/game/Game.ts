@@ -111,7 +111,11 @@ export class Game {
     this.world = new World(this.scene)
     this.player = new Player(SPAWN)
     this.audio = new GameAudio()
-    if (import.meta.env.DEV) (window as unknown as { __planet: Game }).__planet = this
+    if (import.meta.env.DEV) {
+      const w = window as unknown as { __planet: Game; __isDirt?: (p: THREE.Vector3) => boolean }
+      w.__planet = this
+      w.__isDirt = isDirt
+    }
     this.weapons = new WeaponSystem(this.audio, {
       onShoot: (weapon, spread) => this.fire(weapon, spread),
       onEmpty: () => this.toast('弹匣空了 — 按 R 换弹', 'bad'),
@@ -554,11 +558,12 @@ export class Game {
       this.camera.position.addScaledVector(_right, (Math.random() - 0.5) * s)
       this.camera.position.addScaledVector(_up, (Math.random() - 0.5) * s)
     }
-    // Last resort inside tunnels: never render from inside the dirt — the
-    // camera always gives way toward the feet before the frame is drawn.
+    // Last resort inside tunnels: never render from inside the dirt — slide
+    // the camera home toward the player point, which is always in open air.
     if (!p.climbing) {
-      for (let i = 0; i < 6 && isDirt(this.camera.position); i++) {
-        this.camera.position.addScaledVector(_up, -0.2)
+      _v.copy(p.feet).addScaledVector(up, 1.0)
+      for (let i = 0; i < 14 && isDirt(this.camera.position); i++) {
+        this.camera.position.lerp(_v, 0.18)
       }
     }
 

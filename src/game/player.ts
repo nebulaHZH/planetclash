@@ -379,5 +379,18 @@ export class Player {
     }
     _head.copy(this.dir).multiplyScalar(r + PHYSICS.eyeHeight - this.duck)
     if (isDirt(_head)) this.duck = Math.min(0.9, this.duck + dt * 5.5)
+    // chest band: an overhanging lip can swallow the body between knee and head
+    _knee.copy(this.dir).multiplyScalar(r + 1.15)
+    if (dirtPush(_knee, _push)) {
+      const radial = _push.dot(this.dir)
+      _push.addScaledVector(this.dir, -radial)
+      const l = _push.length()
+      if (l > 1e-6) {
+        _away.copy(_push).divideScalar(l)
+        const into = this.moveVel.dot(_away)
+        if (into < 0) this.moveVel.addScaledVector(_away, -into)
+        this.dir.addScaledVector(_away, Math.min(l, 0.3) / Math.max(4, this.surface + this.alt)).normalize()
+      }
+    }
   }
 }
