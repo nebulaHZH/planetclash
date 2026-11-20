@@ -486,6 +486,7 @@ export class Game {
     this.invuln = Math.max(0, this.invuln - dt)
     this.shake = Math.max(0, this.shake - dt * 2.8)
     this.recoil *= Math.exp(-9 * dt)
+    this.world.playerDir.copy(this.player.dir)
 
     const forward = (this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0) - (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0)
     const strafe = (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) - (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0)

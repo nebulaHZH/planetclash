@@ -97,6 +97,11 @@ const DIGS: DigHole[] = []
 const DIG_LIMIT = 24
 /** Bites per excavation — a long tunnel keeps only its newest stretch. */
 const SCOOPS_PER_HOLE = 34
+/** Where the digging is happening: eviction recycles digs far from here. */
+const digAnchor = new THREE.Vector3(0, 1, 0)
+/** Set by digAt when it forgets a hole or a scoop; World.dig heals the shell. */
+let forgottenHole: DigHole | null = null
+let forgottenScoop: { c: THREE.Vector3; r: number } | null = null
 
 export function digHoles(): readonly DigHole[] {
   return DIGS
@@ -326,10 +331,23 @@ export function digAt(point: THREE.Vector3, aim: THREE.Vector3): DigHole {
       scoops: [],
     }
     DIGS.push(host)
-    while (DIGS.length > DIG_LIMIT) DIGS.shift()
+    if (DIGS.length > DIG_LIMIT) {
+      // Recycle the excavation farthest from where the player digs, never the
+      // oldest: the oldest may be the very tunnel they are standing in, and a
+      // forgotten hole would refill around them.
+      let worst = -1
+      let far = -1
+      for (let h = 0; h < DIGS.length - 1; h++) {
+        const hole = DIGS[h]
+        _vE.copy(hole.min).add(hole.max).multiplyScalar(0.5)
+        const d = _vE.distanceTo(centre)
+        if (d > far) { far = d; worst = h }
+      }
+      forgottenHole = worst >= 0 ? DIGS.splice(worst, 1)[0] : null
+    }
   }
   host.scoops.push({ c: centre, r: SCOOP_R })
-  while (host.scoops.length > SCOOPS_PER_HOLE) host.scoops.shift()
+  if (host.scoops.length > SCOOPS_PER_HOLE) forgottenScoop = host.scoops.shift() ?? null
   refresh(host)
   return host
 }
@@ -503,6 +521,8 @@ type Floater = { obj: THREE.Object3D; base: THREE.Vector3; axis: THREE.Vector3; 
 
 export class World {
   planet: THREE.Mesh
+  /** Where the player stands; digs far from here are recycled first. */
+  playerDir = new THREE.Vector3(0, 1, 0)
   pads: CapturePad[] = []
   /** Solid props the player bumps into and bullets stop on. */
   obstacles: Obstacle[] = []
@@ -939,9 +959,20 @@ export class World {
    * bitten field, so the cavity can have a roof and a wall, not just a floor.
    */
   dig(point: THREE.Vector3, aim: THREE.Vector3): { depth: number; radius: number } {
+    digAnchor.copy(this.playerDir.lengthSq() > 0 ? this.playerDir : digAnchor)
     const hole = digAt(point, aim)
     this.sinkGround(hole)
     this.dropDetail(hole)
+    // A forgotten dig refills: raise the shell it had pushed aside, or its
+    // phantom crater stays in the world as holes in the ground.
+    if (forgottenHole) {
+      this.healShell(forgottenHole.scoops)
+      forgottenHole = null
+    }
+    if (forgottenScoop) {
+      this.healShell([forgottenScoop])
+      forgottenScoop = null
+    }
     this.pits = this.pits.filter((pit) => {
       if (digHoles().includes(pit.hole)) return true
       this.scene.remove(pit.mesh)
@@ -951,6 +982,59 @@ export class World {
     })
     this.pushPit(hole)
     return { depth: hole.depth, radius: hole.radius }
+  }
+
+  /** Is this plain-surface point still claimed by a live excavation? */
+  private heldByLiveDigs(p: THREE.Vector3): boolean {
+    for (const hole of digHoles()) {
+      if (inBox(hole, p, 1.2)) return true
+    }
+    return false
+  }
+
+  /**
+   * Raise shell vertices near the forgotten scoops that no live dig still
+   * needs sunk, and give them their meadow colour back — the fill-in of a
+   * forgotten hole. One pass over the shell, whatever the scoop count.
+   */
+  private healShell(scoops: readonly { c: THREE.Vector3; r: number }[]) {
+    const geo = this.planet.geometry
+    const pos = geo.attributes.position as THREE.BufferAttribute
+    const arr = pos.array as Float32Array
+    const colAttr = geo.attributes.color as THREE.BufferAttribute | undefined
+    const cols = colAttr ? (colAttr.array as Float32Array) : null
+    const dirs = this.groundDirs
+    let touched = false
+    for (let i = 0, n = pos.count; i < n; i++) {
+      const x = dirs[i * 3]
+      const y = dirs[i * 3 + 1]
+      const z = dirs[i * 3 + 2]
+      _dig.set(x, y, z)
+      const plain = plainRadius(_dig)
+      _vA.copy(_dig).multiplyScalar(plain)
+      let near = false
+      for (const sc of scoops) {
+        if (_vA.distanceTo(sc.c) <= sc.r + 1.2) { near = true; break }
+      }
+      if (!near) continue
+      const cur = arr[i * 3] * x + arr[i * 3 + 1] * y + arr[i * 3 + 2] * z
+      if (cur >= plain - 0.01) continue
+      if (this.heldByLiveDigs(_vA)) continue
+      arr[i * 3] = x * plain
+      arr[i * 3 + 1] = y * plain
+      arr[i * 3 + 2] = z * plain
+      if (cols) {
+        zoneColor(_dig, _colB)
+        cols[i * 3] = _colB.r
+        cols[i * 3 + 1] = _colB.g
+        cols[i * 3 + 2] = _colB.b
+      }
+      touched = true
+    }
+    if (touched) {
+      pos.needsUpdate = true
+      if (colAttr) colAttr.needsUpdate = true
+    }
   }
 
   /**
@@ -1270,6 +1354,8 @@ export class World {
     const geo = this.planet.geometry
     const pos = geo.attributes.position as THREE.BufferAttribute
     const arr = pos.array as Float32Array
+    const colAttr = geo.attributes.color as THREE.BufferAttribute | undefined
+    const cols = colAttr ? (colAttr.array as Float32Array) : null
     const dirs = this.groundDirs
     for (let i = 0, n = pos.count; i < n; i++) {
       _dig.set(dirs[i * 3], dirs[i * 3 + 1], dirs[i * 3 + 2])
@@ -1277,8 +1363,15 @@ export class World {
       arr[i * 3] = _dig.x * r
       arr[i * 3 + 1] = _dig.y * r
       arr[i * 3 + 2] = _dig.z * r
+      if (cols) {
+        zoneColor(_dig, _colB)
+        cols[i * 3] = _colB.r
+        cols[i * 3 + 1] = _colB.g
+        cols[i * 3 + 2] = _colB.b
+      }
     }
     pos.needsUpdate = true
+    if (colAttr) colAttr.needsUpdate = true
     geo.computeVertexNormals()
     geo.computeBoundingSphere()
   }
