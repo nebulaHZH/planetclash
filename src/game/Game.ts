@@ -491,14 +491,20 @@ export class Game {
     const strafe = (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) - (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0)
     const sprint = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')
 
-    this.player.update(dt, {
-      forward,
-      strafe,
-      sprint,
-      aim: this.aiming,
-      jumpHeld: this.keys.has('Space'),
-      ladder: this.ladders.nearest(this.player.dir),
-    })
+    // Rocket jumps move the body up to ~30 m/s: split the frame so one long
+    // step (a hiccup's dt spike) can never carry the player through a wall.
+    const bodySpeed = this.player.moveVel.length() + Math.abs(this.player.velY)
+    const steps = Math.min(5, Math.max(1, Math.ceil((bodySpeed * dt) / 0.15)))
+    for (let i = 0; i < steps; i++) {
+      this.player.update(dt / steps, {
+        forward,
+        strafe,
+        sprint,
+        aim: this.aiming,
+        jumpHeld: this.keys.has('Space'),
+        ladder: this.ladders.nearest(this.player.dir),
+      })
+    }
 
     if (this.player.jumpedThisFrame) {
       this.audio.jump()
