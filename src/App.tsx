@@ -355,13 +355,13 @@ export default function App() {
             <div className="logo-mark">✦</div>
             <h1>PLANET<span>CLASH</span></h1>
             <p className="tagline">
-              在小星球上，用泡泡、彩虹和星星<br />
-              把 7 个捣蛋鬼送回糖果盒。
+              乘火箭进攻敌方星球，夺取星球之心。<br />
+              别让敌方工兵登船偷家！
             </p>
             <div className="feature-row">
               <span>◉ 球形重力</span>
-              <span>✦ 三把武器</span>
-              <span>♛ 五个角色</span>
+              <span>✦ 双星战争</span>
+              <span>♛ 火箭通勤</span>
             </div>
 
             <div className="roster">
@@ -459,7 +459,7 @@ export default function App() {
             <div className="result-stars">{result.won ? '✦ ✧ ✦ ✧ ✦' : '· · ·'}</div>
             <small>{result.won ? 'MISSION COMPLETE' : 'MISSION FAILED'}</small>
             <h1>{result.won ? '星球清场！' : '被泡泡淹没了…'}</h1>
-            <p>{result.won ? '7 个捣蛋鬼全部回盒，糖果星球恢复供电。' : '别灰心，据点能回血，先占点再开火。'}</p>
+            <p>{result.won ? '星球之心到手，敌方星球插上了糖果旗！' : '星球之心被夺走了…守住火箭坪，别特工兵站进环里！'}</p>
             <div className="result-stats">
               <div><b>{result.kills}</b><small>击倒</small></div>
               <div><b>{Math.round(result.accuracy * 100)}%</b><small>命中率</small></div>

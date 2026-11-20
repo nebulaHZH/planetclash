@@ -9,6 +9,7 @@ import { EnemyManager, enemyHeadshot, enemyIdFrom, type Enemy } from './enemies'
 import { Fx } from './fx'
 import { GameAudio } from './audio'
 import { loadGameAssets } from './assets'
+import { Warzone } from './warzone'
 
 import { SPAWN_LATLON } from './landmarks'
 
@@ -35,6 +36,10 @@ export class Game {
   private ladders = new LadderField()
   private fx: Fx
   private audio = new GameAudio()
+  private war: Warzone
+  private heartToastShown = false
+  private enemyWarned = false
+  private homeTurretToast = false
   private callbacks: GameCallbacks
   private canvas: HTMLCanvasElement
 
@@ -111,6 +116,8 @@ export class Game {
     this.world = new World(this.scene)
     this.player = new Player(SPAWN)
     this.audio = new GameAudio()
+    this.war = new Warzone(this.scene, this.fx, this.audio)
+    this.war.init(this.world.pads[0].dir)
     if (import.meta.env.DEV) {
       const w = window as unknown as { __planet: Game; __isDirt?: (p: THREE.Vector3) => boolean }
       w.__planet = this
@@ -165,6 +172,11 @@ export class Game {
     this.world.resetPads()
     this.world.resetDigs()
     this.ladders.reset()
+    this.war.reset()
+    this.player.planetOverride = null
+    this.heartToastShown = false
+    this.enemyWarned = false
+    this.homeTurretToast = false
     this.kills = 0
     this.shots = 0
     this.hits = 0
@@ -200,7 +212,7 @@ export class Game {
     this.callbacks.onEvent({ kind: 'resumed' })
     this.requestLock()
     window.setTimeout(() => {
-      if (this.running && !this.ended && !this.paused && !this.disposed) this.toast(`击倒 ${GAME.killTarget} 名对手 · 占领据点回血`, 'gold')
+      if (this.running && !this.ended && !this.paused && !this.disposed) this.toast('乘火箭进攻敌方星球 · 夺取星球之心！', 'gold')
     }, 700)
   }
 
@@ -304,6 +316,7 @@ export class Game {
     else if (event.code === 'Digit6') this.weapons.select(5)
     else if (event.code === 'KeyQ') this.weapons.cycle(-1)
     else if (event.code === 'KeyE') this.weapons.cycle(1)
+    else if (event.code === 'KeyF') this.tryShip()
     else if (event.code === 'Escape' && this.fallbackLock) this.pause()
   }
 
@@ -525,6 +538,7 @@ export class Game {
     this.weapons.update(dt, this.player, this.aiming, this.triggerHeld, this.lookX, this.lookY)
     this.enemies.update(dt, this.elapsed, eye, this.player.alive, this.camera, (from) => this.hurt(1, from))
     this.updatePads(dt)
+    this.updateWar(dt)
     this.world.update(dt)
     this.fx.update(dt)
 
@@ -629,8 +643,8 @@ export class Game {
     const forward = this.camera.getWorldDirection(new THREE.Vector3())
     const right = new THREE.Vector3().crossVectors(forward, this.camera.up).normalize()
     const up = new THREE.Vector3().crossVectors(right, forward).normalize()
-    const groups = this.enemies.hitGroups()
-    const dirt = this.world.digColliders()
+    const groups = [...this.enemies.hitGroups(), this.war.hostiles]
+    const dirt = [...this.world.digColliders(), this.war.terrain]
     const muzzle = new THREE.Vector3()
     this.weapons.muzzleWorld(this.camera, muzzle)
 
@@ -660,7 +674,21 @@ export class Game {
       let end = _v.copy(origin).addScaledVector(direction, weapon.range)
       if (enemyHit && (!worldHit || enemyHit.distance < worldHit.distance)) {
         end = enemyHit.point
-        const enemy = this.enemies.byId(enemyIdFrom(enemyHit.object))
+        const ud = enemyHit.object.userData as { war?: string; ref?: unknown }
+        if (ud.war) {
+          // War target: transport, sapper or turret.
+          const res = this.war.hitTarget(ud.war, ud.ref, weapon.damage, enemyHit.point)
+          if (res) {
+            this.audio.hit(false)
+            this.hits += 1
+            anyHit = true
+            this.showDamage(enemyHit.point, Math.round(weapon.damage), false)
+            if (res === 'dead') {
+              this.toast(ud.war === 'ship' ? '击落一艘敌方运输船！' : ud.war === 'turret' ? '摧毁一座敌方防御塔！' : '消灭一个敌方工兵！', 'good')
+            }
+          }
+        } else {
+          const enemy = this.enemies.byId(enemyIdFrom(enemyHit.object))
         if (enemy && !enemy.defeated) {
           const head = enemyHeadshot(enemyHit.object)
           const falloff = weapon.id === 'star'
@@ -684,6 +712,7 @@ export class Game {
           this.hitstop = Math.max(this.hitstop, head ? 0.075 : 0.045)
           this.shake = Math.min(1, this.shake + (head ? 0.34 : 0.18))
           if (killed) this.onKill(enemy, enemyHit.point, head)
+        }
         }
       } else if (worldHit) {
         end = worldHit.point
@@ -856,11 +885,6 @@ export class Game {
     const screen = this.toScreen(point.clone().addScaledVector(enemy.up, 0.9))
     this.callbacks.onEvent({ kind: 'kill', name: enemy.config.name, x: screen.x, y: screen.y, headshot })
     this.emitHud()
-
-    if (this.kills >= GAME.killTarget && this.pendingEnd <= 0) {
-      this.pendingWon = true
-      this.pendingEnd = 1.2
-    }
   }
 
   private hurt(amount: number, from: THREE.Vector3) {
@@ -879,6 +903,99 @@ export class Game {
       this.pendingEnd = 1
     }
     this.emitHud()
+  }
+
+  /** The interplanetary war: transports, sappers, turrets, hearts, our flights. */
+  private updateWar(dt: number) {
+    const prev = this.war.shipState
+    this.war.update(dt, {
+      playerPos: this.player.feet,
+      playerAlive: this.player.alive,
+      enemyCapture: (dp) => {
+        this.war.enemyProgress = Math.min(1.05, this.war.enemyProgress + dp)
+      },
+      hurtPlayer: (amount, from) => this.hurt(amount, from),
+    })
+
+    // Riding the shuttle: pin the seat to it every frame.
+    if (this.war.shipState === 'flying') {
+      const override = this.player.planetOverride
+      if (override) {
+        this.war.seatUp(_v2)
+        override.center.copy(this.war.shuttlePos).addScaledVector(_v2, -0.9)
+        this.player.dir.copy(_v2)
+      }
+    } else if (prev === 'flying') {
+      this.landFromShuttle()
+    }
+
+    // Sappers on the home ring steal our heart.
+    if (this.war.enemyProgress >= 1 && this.pendingEnd <= 0 && !this.pendingWon) {
+      this.toast('星球之心被夺走了…', 'bad')
+      this.pendingWon = false
+      this.pendingEnd = 1.4
+    }
+    if (this.war.enemyProgress > 0.5 && !this.enemyWarned) {
+      this.enemyWarned = true
+      this.toast('警告：星球之心 50% 被敌方锁定！', 'bad')
+    }
+    if (this.war.homeTurretDead && !this.homeTurretToast) {
+      this.homeTurretToast = true
+      this.toast('家里的防御塔被摧毁了！', 'bad')
+    }
+
+    // Taking the enemy ring raises their heart; touching it wins the war.
+    if (!this.ended && this.war.shipState !== 'flying') {
+      const cap = this.war.captureB(dt, this.player.feet)
+      if (cap >= 1 && this.war.bHeartState === 'risen' && !this.heartToastShown) {
+        this.heartToastShown = true
+        this.toast('星球之心升起了！快去拿！', 'gold')
+      }
+      if (this.war.tryTakeHeart(this.player.feet) && this.pendingEnd <= 0) {
+        this.toast('夺得了星球之心！', 'gold')
+        this.pendingWon = true
+        this.pendingEnd = 1.6
+      }
+    }
+  }
+
+  /** Step out of the shuttle onto whichever world it landed on. */
+  private landFromShuttle() {
+    const onB = this.war.shipState === 'dockedB'
+    const p = this.player
+    const up = this.war.parkUp(_v2)
+    p.dir.copy(up)
+    p.heading.copy(onB ? this.war.ringDir : this.world.pads[0].dir).projectOnPlane(p.dir).normalize()
+    if (p.heading.lengthSq() < 0.001) p.heading.copy(_up).cross(p.dir)
+    p.heading.normalize()
+    p.alt = 0
+    p.velY = 0
+    p.grounded = true
+    p.pitch = 0
+    this.invuln = 1
+    p.planetOverride = onB
+      ? { center: this.war.center.clone(), radius: (d) => this.war.surfaceRadius(d) }
+      : null
+    this.snapCamera()
+    this.toast(onB ? '抵达敌方星球！站上紫环唤醒星球之心' : '回到糖果星球', 'gold')
+  }
+
+  /** Board the shuttle if we are close enough to it. */
+  private tryShip() {
+    if (!this.running || this.paused || this.ended || !this.player.alive) return
+    if (this.war.shipState === 'flying') return
+    if (this.player.climbing) return
+    if (this.player.feet.distanceTo(this.war.shuttlePos) > 3.8) {
+      this.toast('离火箭太远', 'bad')
+      return
+    }
+    this.player.planetOverride = { center: this.war.shuttlePos.clone().addScaledVector(this.player.dir, -0.9), radius: () => 0.9, locked: true }
+    this.player.velY = 0
+    this.player.grounded = true
+    this.player.alt = 0
+    this.player.moveVel.set(0, 0, 0)
+    this.war.launch()
+    this.toast(this.war.shuttleToB ? '发射！直飞敌方星球' : '返航糖果星球', 'gold')
   }
 
   private updatePads(dt: number) {

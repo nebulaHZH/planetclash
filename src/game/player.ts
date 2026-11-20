@@ -15,6 +15,19 @@ export type MoveInput = {
   ladder: Ladder | null
 }
 
+/**
+ * Standing on a world other than the candy planet: `dir`/`alt` are then
+ * measured from `center`, and the ground is whatever `radius` says. `locked`
+ * freezes the body (riding a shuttle seat) — no walking, no falling.
+ */
+export type PlanetOverride = {
+  center: THREE.Vector3
+  radius: (dir: THREE.Vector3) => number
+  locked?: boolean
+}
+
+const ORIGIN = new THREE.Vector3()
+
 const _up = new THREE.Vector3(0, 1, 0)
 const _away = new THREE.Vector3()
 const _head = new THREE.Vector3()
@@ -48,6 +61,8 @@ export class Player {
   obstacles: Obstacle[] = []
   /** Set while hanging on a ladder; `alt` is then the height up the rails. */
   climbing: Ladder | null = null
+  /** On another world (or riding a shuttle) when set. */
+  planetOverride: PlanetOverride | null = null
   private sprintLock = false
   private regenDelay = 0
   private jumpBuffer = 0
@@ -89,15 +104,19 @@ export class Player {
   }
 
   get surface() {
-    return surfaceRadius(this.dir)
+    return this.planetOverride ? this.planetOverride.radius(this.dir) : surfaceRadius(this.dir)
+  }
+
+  private get origin() {
+    return this.planetOverride ? this.planetOverride.center : ORIGIN
   }
 
   get feet() {
-    return this.dir.clone().multiplyScalar(this.surface + this.alt)
+    return this.dir.clone().multiplyScalar(this.surface + this.alt).add(this.origin)
   }
 
   get eye() {
-    return this.dir.clone().multiplyScalar(this.surface + this.alt + PHYSICS.eyeHeight)
+    return this.dir.clone().multiplyScalar(this.surface + this.alt + PHYSICS.eyeHeight).add(this.origin)
   }
 
   look(dx: number, dy: number, sensitivity: number, aiming: boolean) {
@@ -135,6 +154,17 @@ export class Player {
     this.jumpBuffer = Math.max(0, this.jumpBuffer - dt)
     if (this.climbing) {
       this.climbUpdate(dt, input)
+      return
+    }
+    if (this.planetOverride?.locked) {
+      // Riding a shuttle seat: the world moves, the body waits.
+      this.moveVel.set(0, 0, 0)
+      this.moving = false
+      this.speedNorm = 0
+      this.velY = 0
+      this.grounded = true
+      this.alt = 0
+      this.duck = Math.max(0, this.duck - dt * 1.5)
       return
     }
 
@@ -188,8 +218,9 @@ export class Player {
       // The floor is the field, not the height field: inside a dug tunnel it
       // sits below the grass, and only a roof-aware query keeps the feet down
       // there. A wall of dirt still refuses the step; a rim is still a fall.
-      ground = groundRadius(this.dir, startRadius + 0.06)
+      // Foreign worlds have a plain analytic ground and no field.
       surf = this.surface
+      ground = this.planetOverride ? surf : groundRadius(this.dir, startRadius + 0.06)
       if (this.grounded && ground - startRadius > distance * MAX_SLOPE + 0.06) {
         this.dir.copy(oldUp)
         this.heading.copy(oldHeading)
@@ -202,8 +233,8 @@ export class Player {
         this.alt = startRadius - surf
       }
     } else {
-      ground = groundRadius(this.dir, startRadius + 0.06)
       surf = this.surface
+      ground = this.planetOverride ? surf : groundRadius(this.dir, startRadius + 0.06)
     }
 
     if (input.ladder && this.grounded && input.forward > 0.3) {
