@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js'
+import { ANIM_URLS, CHARACTER_URLS } from './game/glbs'
 
 const renderer = new THREE.WebGLRenderer({ antialias: true })
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
@@ -49,11 +50,11 @@ const names = ['Barbarian', 'Knight', 'Mage', 'Ranger', 'Rogue', 'Rogue_Hooded']
 
 async function main() {
   const [general, movement] = await Promise.all([
-    load('/assets/anim/Rig_Medium_General.glb'),
-    load('/assets/anim/Rig_Medium_MovementBasic.glb'),
+    load(ANIM_URLS.General),
+    load(ANIM_URLS.MovementBasic),
   ])
   const idle = [...general.animations, ...movement.animations].find((c) => c.name === 'Idle_A')!
-  const models = (await Promise.all(names.map((n) => load(`/assets/chars/${n}.glb`)))).map((g) => g.scene)
+  const models = (await Promise.all(names.map((n) => load(CHARACTER_URLS[n])))).map((g) => g.scene)
   models.forEach((model, i) => {
     model.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) {

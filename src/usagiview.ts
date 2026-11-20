@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { buildUsagiAsset } from './game/usagi'
+import { usagiUrl } from './game/glbs'
 
 /**
  * Look-dev for the sculpted guest: /usagi-view.html
@@ -34,7 +35,7 @@ const fill = new THREE.DirectionalLight('#BFD8FF', 0.7)
 fill.position.set(-1.6, 0.6, 0.5)
 scene.add(fill)
 
-const gltf = await new GLTFLoader().loadAsync('/assets/chars/usagi/usagi.glb')
+const gltf = await new GLTFLoader().loadAsync(usagiUrl)
 const asset = buildUsagiAsset(gltf.scene)
 
 const panels = [

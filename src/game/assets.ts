@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { buildUsagiAsset, type UsagiAsset } from './usagi'
 import { buildNailongAsset } from './nailong'
+import { ANIM_URLS, CHARACTER_URLS, GUN_URLS, nailongUrl, usagiUrl } from './glbs'
 
 /** KayKit Rig_Medium animation packs we ship. All share the same 23-bone skeleton. */
 const ANIM_PACKS = ['General', 'MovementBasic', 'CombatRanged', 'MovementAdvanced'] as const
@@ -50,11 +51,11 @@ export function loadGameAssets() {
 
 async function load(): Promise<GameAssets> {
   const [charGltfs, animGltfs, gunGltfs, usagi, nailong] = await Promise.all([
-    Promise.all(CHARACTER_MODELS.map((name) => loader.loadAsync(`/assets/chars/${name}.glb`))),
-    Promise.all(ANIM_PACKS.map((name) => loader.loadAsync(`/assets/anim/Rig_Medium_${name}.glb`))),
-    Promise.all(GUN_MODELS.map((gun) => loader.loadAsync(`/assets/guns/${gun.name}.glb`))),
-    loader.loadAsync('/assets/chars/usagi/usagi.glb'),
-    loader.loadAsync('/assets/chars/nailong/model.glb'),
+    Promise.all(CHARACTER_MODELS.map((name) => loader.loadAsync(CHARACTER_URLS[name]))),
+    Promise.all(ANIM_PACKS.map((name) => loader.loadAsync(ANIM_URLS[name]))),
+    Promise.all(GUN_MODELS.map((gun) => loader.loadAsync(GUN_URLS[gun.name]))),
+    loader.loadAsync(usagiUrl),
+    loader.loadAsync(nailongUrl),
   ])
 
   const characters = new Map<string, THREE.Group>()

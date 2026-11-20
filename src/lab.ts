@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { ANIM_URLS, CHARACTER_URLS } from './game/glbs'
 
 const info = document.getElementById('info')!
 info.style.display = 'none'
@@ -67,10 +68,10 @@ const load = (url: string): Promise<THREE.Group & { animations: THREE.AnimationC
 
 async function main() {
   const [knight, general, movement, ranged] = await Promise.all([
-    load('/assets/chars/Knight.glb'),
-    load('/assets/anim/Rig_Medium_General.glb'),
-    load('/assets/anim/Rig_Medium_MovementBasic.glb'),
-    load('/assets/anim/Rig_Medium_CombatRanged.glb'),
+    load(CHARACTER_URLS.Knight),
+    load(ANIM_URLS.General),
+    load(ANIM_URLS.MovementBasic),
+    load(ANIM_URLS.CombatRanged),
   ])
 
   knight.traverse((o) => {
