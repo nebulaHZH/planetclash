@@ -615,6 +615,10 @@ export class Game {
 
     let anyHit = false
     let anyHead = false
+    // The launcher's shells blast: the closest world hit detonates and can
+    // fling the player — point it at your feet and ride the explosion.
+    let blastPoint: THREE.Vector3 | null = null
+    let blastDist = Infinity
 
     for (let pellet = 0; pellet < weapon.pellets; pellet++) {
       const direction = forward.clone()
@@ -666,6 +670,10 @@ export class Game {
           ? worldHit.face.normal.clone().transformDirection(worldHit.object.matrixWorld)
           : worldHit.point.clone().normalize()
         this.fx.impact(worldHit.point, normal, weapon.color)
+        if (weapon.id === 'star' && worldHit.distance < blastDist) {
+          blastPoint = worldHit.point.clone()
+          blastDist = worldHit.distance
+        }
       }
       this.fx.tracer(muzzle, end.clone(), weapon.color)
     }
@@ -674,6 +682,33 @@ export class Game {
       this.recoil = Math.min(0.22, this.recoil + weapon.recoil * 0.011)
       this.callbacks.onEvent({ kind: 'hit', headshot: anyHead })
     }
+    if (blastPoint) this.blastJump(blastPoint)
+  }
+
+  /**
+   * The launcher detonates where it lands: everything near the blast is shoved
+   * away from it, the player included. Straight down at your feet that is a
+   * rocket jump — up and over the hills, no ladder needed.
+   */
+  private blastJump(point: THREE.Vector3) {
+    const away = this.player.feet.sub(point)
+    const dist = Math.max(0.3, away.length())
+    const strength = 29 * THREE.MathUtils.clamp(1 - dist / 7.5, 0, 1)
+    if (strength < 1.5) return
+    away.normalize()
+    // Two biases keep the launch tall: pow < 1 rescues shallow aims, and the
+    // distance floor makes a blast right at your feet shove you straight up
+    // instead of sideways along the tiny aim offset.
+    const dot = THREE.MathUtils.clamp(away.dot(this.player.dir), 0, 1)
+    const radial = Math.max(Math.pow(dot, 0.65), THREE.MathUtils.clamp(1 - dist / 3.5, 0, 1))
+    this.player.velY = Math.min(30, Math.max(this.player.velY, 0) + radial * strength)
+    const flat = away.clone().addScaledVector(this.player.dir, -away.dot(this.player.dir))
+    if (flat.lengthSq() > 1e-6) this.player.moveVel.add(flat.normalize().multiplyScalar(strength * 0.7))
+    this.player.grounded = false
+    this.fx.ring(point, this.player.dir, COLORS.gold, 2.4)
+    this.fx.burst(point, 20, { colors: [COLORS.gold, COLORS.white, COLORS.candy], speed: 7.5, size: 0.12, life: 0.5, up: this.player.dir })
+    this.fx.flash(point, COLORS.gold, 1.4)
+    this.shake = Math.min(1, this.shake + 0.5)
   }
 
   /** Knife: short cone in front of the camera, no raycast, no ammo. */

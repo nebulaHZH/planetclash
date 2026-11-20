@@ -173,7 +173,7 @@ export const WEAPONS: WeaponConfig[] = [
     id: 'star', name: '星星散弹', short: 'STAR', icon: '★', color: COLORS.gold,
     kind: 'gun', auto: false, rate: .95, damage: 8, magazine: 6, reserve: 30, pellets: 8,
     spreadHip: .11, spreadAim: .085, recoil: 2.6, range: 32, falloffStart: 11,
-    reload: 1.5, draw: .42, viewmodel: 'shotgun', tagline: '八颗星 · 近距离清场', sound: 'boom',
+    reload: 1.5, draw: .42, viewmodel: 'shotgun', tagline: '对地开火 · 把自己炸上天', sound: 'boom',
   },
   // ---- tools. No ammo, no reload: left click swings, digs or places. ----
   {
