@@ -542,8 +542,20 @@ export class Game {
     }
   }
 
-  private updateCamera(dt: number) {
-    const p = this.player
+  /** The eye renders a glitch when the dirt reaches its near plane: the lens
+   * itself plus a small cross of side probes must all be in open air. */
+  private eyeBlocked(right: THREE.Vector3, up: THREE.Vector3): boolean {
+    const c = this.camera.position
+    return (
+      isDirt(c) ||
+      isDirt(_v2.copy(c).addScaledVector(right, 0.24)) ||
+      isDirt(_v2.copy(c).addScaledVector(right, -0.24)) ||
+      isDirt(_v2.copy(c).addScaledVector(up, 0.24)) ||
+      isDirt(_v2.copy(c).addScaledVector(up, -0.24))
+    )
+  }
+
+  private updateCamera(dt: number) {    const p = this.player
     const up = p.dir
     const heading = p.heading
     _right.copy(heading).cross(up).normalize()
@@ -566,9 +578,11 @@ export class Game {
     }
     // Last resort inside tunnels: never render from inside the dirt — slide
     // the camera home toward the player point, which is always in open air.
+    // Side probes keep the near plane out of walls a whisker away: a lens
+    // touching a wall is the same half-screen glitch as being inside it.
     if (!p.climbing) {
       _v.copy(p.feet).addScaledVector(up, 1.0)
-      for (let i = 0; i < 14 && isDirt(this.camera.position); i++) {
+      for (let i = 0; i < 14 && this.eyeBlocked(_right, _up); i++) {
         this.camera.position.lerp(_v, 0.18)
       }
     }

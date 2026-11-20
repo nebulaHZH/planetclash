@@ -14,6 +14,7 @@ const _n = new THREE.Vector3()
 const _jitter = new THREE.Vector3()
 const _dig = new THREE.Vector3()
 const _col = new THREE.Color()
+const _colB = new THREE.Color()
 const _aimN = new THREE.Vector3()
 const _f = new THREE.Vector3()
 const _avg = new THREE.Vector3()
@@ -418,6 +419,22 @@ function blendHue(a: THREE.Color, b: THREE.Color, t: number, dir: 1 | -1, out: T
   }
   const h = ((_hslA.h + d * t) % 1 + 1) % 1
   return out.setHSL(h, _hslA.s + (_hslB.s - _hslA.s) * t, _hslA.l + (_hslB.l - _hslA.l) * t, THREE.SRGBColorSpace)
+}
+
+/**
+ * Soil strata: four depth bands with wobbly edges — a gradient never reads as
+ * "underground", stripes do. Shared by the pit lining and the sunken shell so
+ * a dug surface is one continuous material.
+ */
+function soilColor(pos: THREE.Vector3, dir: THREE.Vector3, below: number, out: THREE.Color) {
+  const j = Math.sin(pos.x * 12.9898 + pos.y * 78.233 + pos.z * 37.719) * 43758.5453
+  const d = below + (j - Math.floor(j) - 0.5) * 0.5
+  zoneColor(dir, out)
+  out.lerp(SOIL_TOP, smoothstep(d / 0.5))
+  out.lerp(SOIL_LOAM, smoothstep((d - 0.7) / 0.35))
+  out.lerp(SOIL_CLAY, smoothstep((d - 2.2) / 0.35))
+  out.lerp(SOIL_CORE, smoothstep((d - 4.3) / 0.35))
+  return out
 }
 
 function zoneColor(dir: THREE.Vector3, out: THREE.Color) {
@@ -946,10 +963,13 @@ export class World {
     const geo = this.planet.geometry
     const pos = geo.attributes.position as THREE.BufferAttribute
     const arr = pos.array as Float32Array
+    const colAttr = geo.attributes.color as THREE.BufferAttribute | undefined
+    const cols = colAttr ? (colAttr.array as Float32Array) : null
     const dirs = this.groundDirs
     if (dirs.length !== pos.count * 3) return
     const deep = Math.max(R * 0.45, hole.floor - 1.0)
     let touched = false
+    let colored = false
     for (let i = 0, n = pos.count; i < n; i++) {
       const x = dirs[i * 3]
       const y = dirs[i * 3 + 1]
@@ -966,8 +986,20 @@ export class World {
       arr[i * 3 + 1] = y * r
       arr[i * 3 + 2] = z * r
       touched = true
+      // A sunk vertex is underground now: dress it in the same soil strata as
+      // the pit lining, or it keeps its meadow green and glares out of every
+      // tunnel mouth.
+      if (cols && r < cur - 0.01) {
+        _vB.set(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2])
+        soilColor(_vB, _dig, _vA.dot(_dig) - r, _colB)
+        cols[i * 3] = _colB.r
+        cols[i * 3 + 1] = _colB.g
+        cols[i * 3 + 2] = _colB.b
+        colored = true
+      }
     }
     if (touched) pos.needsUpdate = true
+    if (colored && colAttr) colAttr.needsUpdate = true
   }
 
   /** Grass, flowers and pebbles that were standing where the pit now is. */
@@ -1197,15 +1229,7 @@ export class World {
       _vD.copy(_vC).divideScalar(len)
       const plain = plainRadius(_vD)
       const below = plain - len
-      // Soil strata: four depth bands with wobbly edges — a gradient never
-      // reads as "underground", stripes do.
-      const j = Math.sin(_vC.x * 12.9898 + _vC.y * 78.233 + _vC.z * 37.719) * 43758.5453
-      const d = below + (j - Math.floor(j) - 0.5) * 0.5
-      zoneColor(_vD, _col)
-      _col.lerp(SOIL_TOP, smoothstep(d / 0.5))
-      _col.lerp(SOIL_LOAM, smoothstep((d - 0.7) / 0.35))
-      _col.lerp(SOIL_CLAY, smoothstep((d - 2.2) / 0.35))
-      _col.lerp(SOIL_CORE, smoothstep((d - 4.3) / 0.35))
+      soilColor(_vC, _vD, below, _col)
       col[i * 3] = _col.r
       col[i * 3 + 1] = _col.g
       col[i * 3 + 2] = _col.b
