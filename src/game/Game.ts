@@ -9,7 +9,8 @@ import { EnemyManager, enemyHeadshot, enemyIdFrom, type Enemy } from './enemies'
 import { Fx } from './fx'
 import { GameAudio } from './audio'
 import { loadGameAssets } from './assets'
-import { Warzone } from './warzone'
+import { Warzone, type VehicleKind } from './warzone'
+import type { Faction } from '../types'
 
 import { SPAWN_LATLON } from './landmarks'
 
@@ -21,6 +22,8 @@ const _up = new THREE.Vector3()
 const _forward = new THREE.Vector3()
 const _matrix = new THREE.Matrix4()
 const _roll = new THREE.Quaternion()
+const _q = new THREE.Quaternion()
+const FWD = new THREE.Vector3(0, 0, -1)
 const _z = new THREE.Vector3(0, 0, 1)
 const _v2 = new THREE.Vector3()
 const _v3 = new THREE.Vector3()
@@ -51,6 +54,8 @@ export class Game {
 
   private character: CharacterConfig = CHARACTERS[0]
   private kills = 0
+  private deaths = 0
+  private assists = 0
   private shots = 0
   private hits = 0
   private capturedCount = 0
@@ -67,6 +72,17 @@ export class Game {
   private pendingEnd = 0
   private pendingWon = false
   private uiTimer = 0
+
+  // ---- war state ----
+  /** Which world the player currently walks on. */
+  private worldNow: Faction = 'A'
+  /** Respawn countdown in seconds; -1 while alive. */
+  private respawnTimer = -1
+  /** Mouse look accumulated this frame, consumed by vehicle pilot input. */
+  private vehicleDX = 0
+  private vehicleDY = 0
+  /** Pending vehicle dismount to apply after war update. */
+  private pendingDismount: { world: Faction; point: THREE.Vector3 } | null = null
   private last = performance.now()
   private frame = 0
   private locked = false
@@ -118,7 +134,9 @@ export class Game {
     this.audio = new GameAudio()
     this.war = new Warzone(this.scene, this.fx, this.audio)
     this.war.init(this.world.pads[0].dir)
-    if (import.meta.env.DEV) {
+    // Debug hook: dev builds always expose it; prod builds only with ?debug
+    // so headless verification can drive the war sim without a dev server.
+    if (import.meta.env.DEV || window.location.search.includes('debug')) {
       const w = window as unknown as { __planet: Game; __isDirt?: (p: THREE.Vector3) => boolean }
       w.__planet = this
       w.__isDirt = isDirt
@@ -174,10 +192,17 @@ export class Game {
     this.ladders.reset()
     this.war.reset()
     this.player.planetOverride = null
+    this.worldNow = 'A'
+    this.respawnTimer = -1
+    this.pendingDismount = null
+    this.vehicleDX = 0
+    this.vehicleDY = 0
     this.heartToastShown = false
     this.enemyWarned = false
     this.homeTurretToast = false
     this.kills = 0
+    this.deaths = 0
+    this.assists = 0
     this.shots = 0
     this.hits = 0
     this.capturedCount = 0
@@ -303,6 +328,14 @@ export class Game {
       return
     }
     this.keys.add(event.code)
+    if (event.code === 'Escape' && this.fallbackLock) { this.pause(); return }
+    if (this.war.ride) {
+      // While piloting: E toggles shuttle autopilot, G ejects a rocket, F exits.
+      if (event.code === 'KeyE') this.war.toggleAutopilot()
+      else if (event.code === 'KeyG') this.war.ejectRocket()
+      else if (event.code === 'KeyF') this.dismountVehicle()
+      return
+    }
     if (event.code === 'Space') {
       event.preventDefault()
       this.player.jump()
@@ -316,8 +349,7 @@ export class Game {
     else if (event.code === 'Digit6') this.weapons.select(5)
     else if (event.code === 'KeyQ') this.weapons.cycle(-1)
     else if (event.code === 'KeyE') this.weapons.cycle(1)
-    else if (event.code === 'KeyF') this.tryShip()
-    else if (event.code === 'Escape' && this.fallbackLock) this.pause()
+    else if (event.code === 'KeyF') this.tryVehicle()
   }
 
   private onKeyUp = (event: KeyboardEvent) => {
@@ -360,7 +392,13 @@ export class Game {
     const limit = 220
     dx = THREE.MathUtils.clamp(dx, -limit, limit)
     dy = THREE.MathUtils.clamp(dy, -limit, limit)
-    this.player.look(dx, dy, PHYSICS.sens * this.sensitivity, this.aiming)
+    if (this.war.ride) {
+      // Vehicle steering: accumulate raw look deltas for the pilot input.
+      this.vehicleDX += dx
+      this.vehicleDY += dy
+    } else {
+      this.player.look(dx, dy, PHYSICS.sens * this.sensitivity, this.aiming)
+    }
     this.lookX += dx
     this.lookY += dy
     this.lookX = THREE.MathUtils.clamp(this.lookX, -400, 400)
@@ -504,41 +542,62 @@ export class Game {
     const forward = (this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0) - (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0)
     const strafe = (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) - (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0)
     const sprint = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')
+    const riding = this.war.ride !== null
 
-    // Rocket jumps move the body up to ~30 m/s: split the frame so one long
-    // step (a hiccup's dt spike) can never carry the player through a wall.
-    const bodySpeed = this.player.moveVel.length() + Math.abs(this.player.velY)
-    const steps = Math.min(5, Math.max(1, Math.ceil((bodySpeed * dt) / 0.15)))
-    for (let i = 0; i < steps; i++) {
-      this.player.update(dt / steps, {
-        forward,
-        strafe,
-        sprint,
-        aim: this.aiming,
-        jumpHeld: this.keys.has('Space'),
-        ladder: this.ladders.nearest(this.player.dir),
-      })
+    if (this.respawnTimer >= 0) {
+      // Dead: freeze the body and run the respawn clock (handled in updateWar).
+      this.player.update(dt, { forward: 0, strafe: 0, sprint: false, aim: false, jumpHeld: false, ladder: null })
+    } else if (riding) {
+      // Pilot input; the player's own body is parked wherever they boarded.
+      this.war.pilot(dt, forward, strafe, this.vehicleDX, this.vehicleDY)
+      this.player.update(dt, { forward: 0, strafe: 0, sprint: false, aim: false, jumpHeld: false, ladder: null })
+      // Left mouse fires the vehicle cannon instead of the泡泡枪.
+      if (this.triggerHeld) this.war.fireVehicle()
+    } else {
+      // Rocket jumps move the body up to ~30 m/s: split the frame so one long
+      // step (a hiccup's dt spike) can never carry the player through a wall.
+      const bodySpeed = this.player.moveVel.length() + Math.abs(this.player.velY)
+      const steps = Math.min(5, Math.max(1, Math.ceil((bodySpeed * dt) / 0.15)))
+      for (let i = 0; i < steps; i++) {
+        this.player.update(dt / steps, {
+          forward, strafe, sprint,
+          aim: this.aiming,
+          jumpHeld: this.keys.has('Space'),
+          ladder: this.ladders.nearest(this.player.dir),
+        })
+      }
+      if (this.player.jumpedThisFrame) {
+        this.audio.jump()
+        this.fx.ring(this.player.feet, this.player.dir, COLORS.white, 1.1)
+      }
+      if (this.player.landImpact > 0) {
+        const impact = this.player.landImpact
+        this.audio.land()
+        this.shake = Math.min(1, this.shake + impact * 0.03)
+        if (impact > 6) this.fx.ring(this.player.feet, this.player.dir, COLORS.white, 1.4)
+        this.player.landImpact = 0
+      }
     }
 
-    if (this.player.jumpedThisFrame) {
-      this.audio.jump()
-      this.fx.ring(this.player.feet, this.player.dir, COLORS.white, 1.1)
-    }
-    if (this.player.landImpact > 0) {
-      const impact = this.player.landImpact
-      this.audio.land()
-      this.shake = Math.min(1, this.shake + impact * 0.03)
-      if (impact > 6) this.fx.ring(this.player.feet, this.player.dir, COLORS.white, 1.4)
-      this.player.landImpact = 0
-    }
+    this.vehicleDX = 0
+    this.vehicleDY = 0
 
-    this.updateCamera(dt)
+    if (riding && this.war.ride) this.updateRideCamera(dt, this.war.ride.pose)
+    else this.updateCamera(dt)
 
     const eye = this.player.eye
-    this.weapons.update(dt, this.player, this.aiming, this.triggerHeld, this.lookX, this.lookY)
-    this.enemies.update(dt, this.elapsed, eye, this.player.alive, this.camera, (from) => this.hurt(1, from))
+    if (!riding) this.weapons.update(dt, this.player, this.aiming, this.triggerHeld, this.lookX, this.lookY)
+    // The legacy bubble-pop cast lives on the home world and is now passive
+    // target practice: feeding playerAlive=false stops them engaging or shooting
+    // the player, so spawning is never an ambush. Real threats (enemy turrets and
+    // B-side soldiers) are handled by the warzone on the enemy planet.
+    this.enemies.update(dt, this.elapsed, eye, false, this.camera, (from) => this.hurt(1, from))
     this.updatePads(dt)
     this.updateWar(dt)
+    if (this.pendingDismount) {
+      this.applyDismount(this.pendingDismount)
+      this.pendingDismount = null
+    }
     this.world.update(dt)
     this.fx.update(dt)
 
@@ -595,7 +654,7 @@ export class Game {
     // the camera home toward the player point, which is always in open air.
     // Side probes keep the near plane out of walls a whisker away: a lens
     // touching a wall is the same half-screen glitch as being inside it.
-    if (!p.climbing) {
+    if (!p.climbing && !p.planetOverride) {
       _v.copy(p.feet).addScaledVector(up, 1.0)
       for (let i = 0; i < 14 && this.eyeBlocked(_right, _up); i++) {
         this.camera.position.lerp(_v, 0.18)
@@ -647,6 +706,11 @@ export class Game {
     const dirt = [...this.world.digColliders(), this.war.terrain]
     const muzzle = new THREE.Vector3()
     this.weapons.muzzleWorld(this.camera, muzzle)
+    // Sprite.raycast (hero nameplates / health bars) needs a camera on the
+    // raycaster. Without it the ray throws the moment it crosses a sprite,
+    // aborting the whole shot — which made turrets unkillable once heroes
+    // were added. Keep the live camera attached before every intersect pass.
+    this.raycaster.camera = this.camera
 
     let anyHit = false
     let anyHead = false
@@ -683,9 +747,6 @@ export class Game {
             this.hits += 1
             anyHit = true
             this.showDamage(enemyHit.point, Math.round(weapon.damage), false)
-            if (res === 'dead') {
-              this.toast(ud.war === 'ship' ? '击落一艘敌方运输船！' : ud.war === 'turret' ? '摧毁一座敌方防御塔！' : '消灭一个敌方工兵！', 'good')
-            }
           }
         } else {
           const enemy = this.enemies.byId(enemyIdFrom(enemyHit.object))
@@ -806,6 +867,21 @@ export class Game {
    */
   private groundPoint(maxDist: number): THREE.Vector3 | null {
     const forward = this.camera.getWorldDirection(_forward)
+    if (this.worldNow === 'B') {
+      // The purple world is not part of the home planet's voxel field —
+      // aimGround() would probe empty space at the wrong centre. Intersect the
+      // actual warzone terrain mesh (already reshaped by earlier digs) instead.
+      this.raycaster.set(this.camera.position, forward)
+      this.raycaster.far = maxDist
+      const hit = this.raycaster.intersectObject(this.war.terrain, false)[0]
+      if (hit) return hit.point.clone()
+      if (forward.dot(this.player.dir) > -0.22) return null
+      // Looking down but the ray fell short: drop a point just ahead of the
+      // feet onto B's live (dug) surface, centred on the enemy planet.
+      const foot = _v.copy(this.player.dir).addScaledVector(this.player.heading, 1.7 / PHYSICS.radius).normalize()
+      const r = this.war.surfaceAt('B', foot)
+      return foot.multiplyScalar(r).add(this.war.specs.B.center)
+    }
     const hit = this.world.aimGround(this.camera.position, forward, maxDist)
     if (hit) return hit
     if (forward.dot(this.player.dir) > -0.22) return null
@@ -828,6 +904,13 @@ export class Game {
       return
     }
     const dir = _vB.copy(hit).normalize()
+    // On the enemy world, digging uses the warzone's local dig field.
+    if (this.worldNow === 'B') {
+      this.war.digB('B', hit, forward)
+      this.audio.dig()
+      this.emitHud()
+      return
+    }
     for (const obstacle of this.world.obstacles) {
       if (dir.angleTo(obstacle.dir) * PHYSICS.radius < obstacle.radius + 1.1) {
         this.toast('旁边有东西，挖不动', 'bad')
@@ -887,8 +970,35 @@ export class Game {
     this.emitHud()
   }
 
+  /**
+   * Same fanfare as a home-planet kill, but for war units: turrets, grunts
+   * and the enemy hero. `kind` picks the label on the floating KO sticker.
+   */
+  private onWarKill(kind: 'turret' | 'soldier' | 'hero', point: THREE.Vector3, up: THREE.Vector3) {
+    this.kills += 1
+    this.weapons.giveAmmo(GAME.ammoReward)
+    this.audio.kill()
+    this.hitstop = 0.12
+    this.slowmo = kind === 'hero' ? 0.5 : 0.34
+    this.shake = Math.min(1, this.shake + (kind === 'turret' ? 0.7 : 0.55))
+    this.fx.confettiBurst(point, up, kind === 'turret' ? 64 : 46)
+    this.fx.marbles(point, up)
+    this.fx.ring(point, up, kind === 'turret' ? COLORS.gold : COLORS.lemon, kind === 'turret' ? 2.8 : 2.1)
+    const screen = this.toScreen(point.clone().addScaledVector(up, 0.9))
+    const label = kind === 'turret' ? 'KO! 塔掉了' : kind === 'hero' ? 'KO! 英雄击杀' : 'KO!'
+    this.callbacks.onEvent({ kind: 'kill', name: label, x: screen.x, y: screen.y, headshot: false })
+    if (kind === 'turret') this.toast('摧毁一座敌方防御塔！', 'good')
+    else if (kind === 'hero') this.toast('击杀敌方英雄「紫晶英雄」！', 'gold')
+    else this.toast('消灭一名敌方士兵！', 'good')
+    this.emitHud()
+  }
+
   private hurt(amount: number, from: THREE.Vector3) {
     if (!this.running || this.paused || this.ended || !this.player.alive) return
+    if (this.war.ride) {
+      // Damage while piloting goes to the vehicle, not the body.
+      return
+    }
     if (this.invuln > 0) return
     this.invuln = GAME.invuln
     this.hitstop = Math.max(this.hitstop, 0.05)
@@ -897,105 +1007,131 @@ export class Game {
     this.audio.hurt()
     this.callbacks.onEvent({ kind: 'hurt', health: this.player.health })
     if (from) this.fx.burst(from, 5, { colors: [COLORS.candy, COLORS.white], speed: 2, size: 0.07, life: 0.3 })
-    if (this.player.health <= 0) {
-      this.player.alive = false
-      this.pendingWon = false
-      this.pendingEnd = 1
-    }
+    if (this.player.health <= 0) this.beginRespawn()
     this.emitHud()
   }
 
-  /** The interplanetary war: transports, sappers, turrets, hearts, our flights. */
-  private updateWar(dt: number) {
-    const prev = this.war.shipState
-    this.war.update(dt, {
-      playerPos: this.player.feet,
-      playerAlive: this.player.alive,
-      enemyCapture: (dp) => {
-        this.war.enemyProgress = Math.min(1.05, this.war.enemyProgress + dp)
-      },
-      hurtPlayer: (amount, from) => this.hurt(amount, from),
-    })
-
-    // Riding the shuttle: pin the seat to it every frame.
-    if (this.war.shipState === 'flying') {
-      const override = this.player.planetOverride
-      if (override) {
-        this.war.seatUp(_v2)
-        override.center.copy(this.war.shuttlePos).addScaledVector(_v2, -0.9)
-        this.player.dir.copy(_v2)
-      }
-    } else if (prev === 'flying') {
-      this.landFromShuttle()
-    }
-
-    // Sappers on the home ring steal our heart.
-    if (this.war.enemyProgress >= 1 && this.pendingEnd <= 0 && !this.pendingWon) {
-      this.toast('星球之心被夺走了…', 'bad')
-      this.pendingWon = false
-      this.pendingEnd = 1.4
-    }
-    if (this.war.enemyProgress > 0.5 && !this.enemyWarned) {
-      this.enemyWarned = true
-      this.toast('警告：星球之心 50% 被敌方锁定！', 'bad')
-    }
-    if (this.war.homeTurretDead && !this.homeTurretToast) {
-      this.homeTurretToast = true
-      this.toast('家里的防御塔被摧毁了！', 'bad')
-    }
-
-    // Taking the enemy ring raises their heart; touching it wins the war.
-    if (!this.ended && this.war.shipState !== 'flying') {
-      const cap = this.war.captureB(dt, this.player.feet)
-      if (cap >= 1 && this.war.bHeartState === 'risen' && !this.heartToastShown) {
-        this.heartToastShown = true
-        this.toast('星球之心升起了！快去拿！', 'gold')
-      }
-      if (this.war.tryTakeHeart(this.player.feet) && this.pendingEnd <= 0) {
-        this.toast('夺得了星球之心！', 'gold')
-        this.pendingWon = true
-        this.pendingEnd = 1.6
-      }
+  /** Death is no longer game over: fall, then reappear on the home world. */
+  private beginRespawn() {
+    if (this.respawnTimer >= 0) return
+    this.deaths += 1
+    this.player.alive = false
+    this.pendingWon = false
+    this.respawnTimer = 2.6
+    this.audio.lose()
+    this.callbacks.onEvent({ kind: 'hurt', health: 0 })
+    this.toast('你被击倒了 · 正在己方星球重生…', 'bad')
+    // If we were riding, lose the vehicle.
+    if (this.war.ride) {
+      const pose = this.war.ride.pose
+      if (pose) this.war.dismount()
     }
   }
 
-  /** Step out of the shuttle onto whichever world it landed on. */
-  private landFromShuttle() {
-    const onB = this.war.shipState === 'dockedB'
+  private respawnNow() {
     const p = this.player
-    const up = this.war.parkUp(_v2)
-    p.dir.copy(up)
-    p.heading.copy(onB ? this.war.ringDir : this.world.pads[0].dir).projectOnPlane(p.dir).normalize()
-    if (p.heading.lengthSq() < 0.001) p.heading.copy(_up).cross(p.dir)
-    p.heading.normalize()
+    const spec = this.war.specs.A
+    p.planetOverride = null
+    p.reset(SPAWN, p.maxHealth, p.speedMult)
+    p.alive = true
+    p.health = p.maxHealth
+    this.worldNow = 'A'
+    this.invuln = 1.6
+    this.respawnTimer = -1
+    // Spawn at the home heart's rally area, safe behind the big turret.
+    const local = _v.set(0.12, 0.97, -0.06).normalize()
+    p.dir.copy(local).applyQuaternion(spec.frame).normalize()
+    p.heading.copy(_up).cross(p.dir).normalize()
     p.alt = 0
     p.velY = 0
     p.grounded = true
-    p.pitch = 0
-    this.invuln = 1
-    p.planetOverride = onB
-      ? { center: this.war.center.clone(), radius: (d) => this.war.surfaceRadius(d) }
-      : null
     this.snapCamera()
-    this.toast(onB ? '抵达敌方星球！站上紫环唤醒星球之心' : '回到糖果星球', 'gold')
+    this.callbacks.onEvent({ kind: 'respawn' })
+    this.callbacks.onEvent({ kind: 'resumed' })
+    this.toast('已在糖果星球重生 · 继续保卫星球之心！', 'good')
+    void p
   }
 
-  /** Board the shuttle if we are close enough to it. */
-  private tryShip() {
-    if (!this.running || this.paused || this.ended || !this.player.alive) return
-    if (this.war.shipState === 'flying') return
+  /** Advance the whole war and drain its one-frame toast buffer. */
+  private updateWar(dt: number) {
+    if (this.respawnTimer >= 0) {
+      this.respawnTimer -= dt
+      if (this.respawnTimer <= 0) this.respawnNow()
+    }
+    this.war.update(dt, {
+      playerPos: this.player.feet,
+      playerWorld: this.worldNow,
+      playerInRide: this.war.ride !== null,
+      playerAlive: this.player.alive && this.respawnTimer < 0,
+      hurtPlayer: (amount, from) => this.hurt(amount, from),
+      onAssist: () => { this.assists += 1 },
+      onWarKill: (kind, point, up) => this.onWarKill(kind, point, up),
+      refillAmmo: (amount) => { this.weapons.giveAmmo(amount); this.emitHud() },
+      toast: (text, tone) => this.toast(text, tone),
+      onEnd: (won) => this.finish(won),
+    })
+    for (const t of this.war.drainToasts()) this.toast(t.text, t.tone)
+  }
+
+  /** Third-person chase camera while piloting a ship or rocket. */
+  private updateRideCamera(dt: number, pose: { position: THREE.Vector3; quaternion: THREE.Quaternion; up: THREE.Vector3 }) {
+    const back = _forward.copy(FWD).applyQuaternion(pose.quaternion).normalize().multiplyScalar(-1)
+    const up = _up.copy(pose.up).normalize()
+    const dist = this.war.ride?.kind === 'ship' ? 13 : 8
+    const desired = _v.copy(pose.position).addScaledVector(back, dist).addScaledVector(up, 3.4)
+    this.camera.position.lerp(desired, Math.min(1, dt * 6))
+    const look = _v2.copy(pose.position).addScaledVector(back, -4).addScaledVector(up, 1)
+    _matrix.lookAt(this.camera.position, look, up)
+    this.camera.quaternion.slerp(_q.setFromRotationMatrix(_matrix), Math.min(1, dt * 8))
+    this.camera.up.copy(up)
+    this.camera.fov += (74 - this.camera.fov) * Math.min(1, dt * 6)
+    this.camera.updateProjectionMatrix()
+    if (this.running) {
+      this.key.target.position.copy(pose.position)
+      this.key.position.copy(pose.position).addScaledVector(up, 60).addScaledVector(back, 30)
+      this.key.target.updateMatrixWorld()
+    }
+  }
+
+  /** F near a parked ship / rocket pad boards it. */
+  private tryVehicle() {
+    if (!this.running || this.paused || this.ended || !this.player.alive || this.respawnTimer >= 0) return
     if (this.player.climbing) return
-    if (this.player.feet.distanceTo(this.war.shuttlePos) > 3.8) {
-      this.toast('离火箭太远', 'bad')
+    const near = this.war.nearestVehicle(this.player.feet)
+    if (!near) {
+      this.toast('附近没有载具 · 去找发光的停机坪', 'bad')
       return
     }
-    this.player.planetOverride = { center: this.war.shuttlePos.clone().addScaledVector(this.player.dir, -0.9), radius: () => 0.9, locked: true }
-    this.player.velY = 0
-    this.player.grounded = true
-    this.player.alt = 0
+    const kind: VehicleKind = near.kind
+    this.war.board(kind, this.worldNow, this.player.dir, near.point)
     this.player.moveVel.set(0, 0, 0)
-    this.war.launch()
-    this.toast(this.war.shuttleToB ? '发射！直飞敌方星球' : '返航糖果星球', 'gold')
+  }
+
+  /** F while riding leaves the vehicle and lands on the closest world. */
+  private dismountVehicle() {
+    const out = this.war.dismount()
+    if (out) this.pendingDismount = out
+  }
+
+  private applyDismount(out: { world: Faction; point: THREE.Vector3 }) {
+    const p = this.player
+    const spec = this.war.specs[out.world]
+    p.dir.copy(out.point).sub(spec.center).normalize()
+    p.planetOverride = out.world === 'A'
+      ? null
+      : { center: spec.center.clone(), radius: (d) => this.war.surfaceAt('B', d) }
+    this.worldNow = out.world
+    p.alt = 0
+    p.velY = 0
+    p.grounded = true
+    p.moveVel.set(0, 0, 0)
+    p.pitch = 0
+    p.heading.copy(_up).cross(p.dir)
+    if (p.heading.lengthSq() < 0.001) p.heading.set(1, 0, 0).projectOnPlane(p.dir)
+    p.heading.normalize()
+    this.invuln = 1.2
+    this.snapCamera()
+    this.toast(out.world === 'B' ? '登陆敌方星球 · 摧毁大塔后夺取星球之心' : '回到糖果星球', 'gold')
   }
 
   private updatePads(dt: number) {
@@ -1046,10 +1182,14 @@ export class Game {
       kind: 'end',
       result: {
         won,
+        cause: 'heart',
         kills: this.kills,
+        deaths: this.deaths,
+        assists: this.assists,
         accuracy: this.shots > 0 ? this.hits / this.shots : 0,
         time: this.elapsed,
         captured: this.capturedCount,
+        turretsDown: 11 - this.war.turretCounts().big - this.war.turretCounts().mid - this.war.turretCounts().small,
       },
     })
     this.emitHud()
@@ -1088,6 +1228,18 @@ export class Game {
       const flat = to.addScaledVector(up, -to.dot(up))
       bearing = flat.lengthSq() < 1e-5 ? 0 : Math.atan2(flat.normalize().dot(right), flat.dot(heading))
     }
+    // Nearest boardable vehicle: distance + bearing so the HUD can guide the
+    // player who "can't find the rocket".
+    let vehicleInfo: { kind: VehicleKind; dist: number; point: THREE.Vector3 } | null = null
+    let vehicleBearing = Infinity
+    if (!this.war.ride) {
+      vehicleInfo = this.war.nearestVehicle(this.player.feet)
+      if (vehicleInfo) {
+        const to = _v.copy(vehicleInfo.point).sub(this.player.feet)
+        const flat = _v2.copy(to).addScaledVector(up, -to.dot(up))
+        vehicleBearing = flat.lengthSq() < 1e-5 ? 0 : Math.atan2(flat.normalize().dot(right), flat.dot(heading))
+      }
+    }
     const hud: HudState = {
       health: this.player.health,
       maxHealth: this.player.maxHealth,
@@ -1108,7 +1260,39 @@ export class Game {
       bearing,
       characterId: this.character.id,
       running: this.running,
+      world: this.worldNow,
+      ride: this.war.ride
+        ? {
+            mode: this.war.ride.kind,
+            auto: this.war.ride.autopilot,
+            hp: this.war.ride.hp,
+            maxHp: this.war.ride.maxHp,
+            fuel: this.war.ride.fuel,
+            maxFuel: this.war.ride.maxFuel,
+            target: this.war.ride.target,
+            progress: this.war.ride.progress,
+            speed: this.war.ride.speed,
+          }
+        : emptyRide(),
+      heartA: this.war.progressA,
+      heartB: this.war.progressB,
+      bHeartRisen: this.war.bHeartState !== 'hidden',
+      turrets: this.war.turretCounts(),
+      allies: this.war.allyCounts(),
+      heroes: this.war.heroStatus(),
+      shipsInFlight: this.war.shipsInFlight(),
+      supplyNearby: this.war.nearbySupply(this.player.feet, this.worldNow),
+      respawn: this.respawnTimer,
+      shipEta: this.war.shuttleEta(),
+      kda: { kills: this.kills, deaths: this.deaths, assists: this.assists },
+      vehicleBearing: vehicleBearing,
+      vehicleDist: vehicleInfo ? vehicleInfo.dist : -1,
+      vehicleKind: vehicleInfo ? vehicleInfo.kind : null,
     }
     this.callbacks.onHud(hud)
+
+    function emptyRide() {
+      return { mode: 'foot' as const, auto: true, hp: 1, maxHp: 1, fuel: 0, maxFuel: 0, target: 'B' as const, progress: 0, speed: 0 }
+    }
   }
 }

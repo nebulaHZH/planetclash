@@ -1351,3 +1351,315 @@ kbd {
     font-size: 13px;
   }
 }
+
+/* ============================================================ WAR HUD ==== */
+.war-board {
+  width: min(380px, 40vw);
+  padding: 9px 14px 10px;
+  border: 2px solid rgba(255, 253, 248, 0.28);
+  border-radius: 16px;
+  background: rgba(35, 20, 54, 0.62);
+  backdrop-filter: blur(9px);
+  -webkit-backdrop-filter: blur(9px);
+  box-shadow: 0 5px 0 rgba(19, 10, 34, 0.35);
+}
+
+.war-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+.war-title small {
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--sky);
+  opacity: 0.85;
+}
+
+.heart-race {
+  margin: 8px 0 6px;
+}
+.heart-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 15px;
+}
+.heart-side small {
+  width: 76px;
+  font-size: 10px;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+.heart-side.theirs small { text-align: left; }
+.heart-pip {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--candy);
+  box-shadow: 0 0 0 2px rgba(255, 127, 168, 0.28);
+}
+.heart-side.theirs .heart-pip {
+  background: var(--gold);
+  box-shadow: 0 0 0 2px rgba(248, 184, 78, 0.28);
+}
+.heart-track {
+  flex: 1;
+  height: 7px;
+  border-radius: 99px;
+  background: rgba(255, 253, 248, 0.16);
+  overflow: hidden;
+}
+.heart-track i {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  transition: width 0.15s linear;
+}
+.heart-side.ours .heart-track i { background: linear-gradient(90deg, var(--mint), var(--candy)); }
+.heart-side.theirs .heart-track i { background: linear-gradient(90deg, var(--gold), #ff7a5c); margin-left: auto; }
+
+.war-stats {
+  display: flex;
+  gap: 14px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 253, 248, 0.14);
+  font-size: 10px;
+  opacity: 0.82;
+}
+.war-stats span { white-space: nowrap; }
+
+/* ---- Hero status row --------------------------------------------------- */
+.hero-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 7px;
+}
+.hero-tag {
+  position: relative;
+  flex: 1;
+  padding: 5px 9px 6px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  border: 1px solid rgba(255, 253, 248, 0.18);
+  background: rgba(20, 12, 36, 0.55);
+}
+.hero-tag.ally.alive { color: var(--mint); border-color: rgba(143, 228, 194, 0.55); }
+.hero-tag.enemy.alive { color: #e0a0ff; border-color: rgba(224, 160, 255, 0.55); }
+.hero-tag.down { color: var(--ink-soft); opacity: 0.7; }
+.hero-hp {
+  display: block;
+  height: 3px;
+  margin-top: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+.hero-hp b {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #c86bfa, #ff7ac0);
+  transition: width 0.2s ease-out;
+}
+
+/* ---- Ammo supply prompt ------------------------------------------------ */
+.supply-prompt {
+  position: absolute;
+  left: 50%;
+  bottom: 22%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 9px 20px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 215, 94, 0.6);
+  background: rgba(40, 28, 12, 0.82);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  animation: supply-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.supply-prompt b { font-size: 13px; color: var(--gold); }
+.supply-prompt small { font-size: 11px; color: var(--ink-soft); }
+@keyframes supply-in {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* ---- Vehicle guidance: the fix for "can't find the rocket" ------------- */
+.vehicle-prompt {
+  position: absolute;
+  left: 50%;
+  top: 24%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 11px 20px 11px 14px;
+  border: 2px solid var(--sky);
+  border-radius: 18px;
+  background: rgba(24, 40, 58, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 6px 0 rgba(10, 20, 34, 0.45);
+  animation: vprompt-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.vehicle-prompt.waiting { border-color: var(--lemon); }
+@keyframes vprompt-in {
+  from { opacity: 0; transform: translate(-50%, -14px) scale(0.94); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+.vehicle-arrow {
+  flex: none;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--sky);
+  color: #16283a;
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1;
+  transition: transform 0.25s ease-out;
+}
+.vehicle-prompt.waiting .vehicle-arrow { background: var(--lemon); color: #3a2c10; }
+.vehicle-copy { display: flex; flex-direction: column; gap: 3px; }
+.vehicle-copy b { font-size: 14px; color: var(--paper); }
+.vehicle-copy small { font-size: 11px; opacity: 0.88; }
+.vehicle-prompt kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ---- Ride status panel ------------------------------------------------- */
+.ride-panel {
+  position: absolute;
+  left: 50%;
+  bottom: 21%;
+  transform: translateX(-50%);
+  min-width: 300px;
+  padding: 12px 18px;
+  border: 2px solid rgba(158, 220, 255, 0.55);
+  border-radius: 16px;
+  background: rgba(24, 40, 58, 0.8);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 6px 0 rgba(10, 20, 34, 0.4);
+}
+.ride-panel.rocket { border-color: rgba(248, 184, 78, 0.6); }
+.ride-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.ride-head b { font-size: 15px; }
+.ride-head .auto {
+  font-size: 10px;
+  padding: 3px 9px;
+  border-radius: 99px;
+  background: rgba(255, 253, 248, 0.14);
+  opacity: 0.85;
+}
+.ride-head .auto.on { background: var(--mint); color: #163a2c; opacity: 1; }
+.ride-gauge {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 6px 0;
+}
+.ride-gauge label { width: 32px; font-size: 10px; opacity: 0.8; }
+.ride-gauge .bar {
+  flex: 1;
+  height: 9px;
+  border-radius: 99px;
+  background: rgba(255, 253, 248, 0.16);
+  overflow: hidden;
+}
+.ride-gauge .bar i {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: var(--sky);
+  transition: width 0.12s linear;
+}
+.ride-gauge.fuel .bar i { background: var(--gold); }
+.ride-gauge.speed .bar i { background: var(--mint); }
+.ride-gauge > b { width: 26px; font-size: 12px; color: var(--gold); text-align: right; }
+.ride-hint {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(255, 253, 248, 0.14);
+  font-size: 10px;
+  opacity: 0.9;
+}
+.ride-hint kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 253, 248, 0.9);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+/* ---- Respawn banner ---------------------------------------------------- */
+.respawn-banner {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 34px;
+  border: 2px solid var(--candy);
+  border-radius: 20px;
+  background: rgba(58, 20, 42, 0.85);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 6px 0 rgba(30, 10, 22, 0.5);
+}
+.respawn-banner small { font-size: 12px; color: var(--candy); }
+.respawn-banner b { font-size: 34px; line-height: 1; color: var(--lemon); }
+
+@media (max-width: 720px) {
+  .war-board { width: 62vw; }
+  .vehicle-prompt { top: 20%; padding: 9px 14px; }
+  .vehicle-arrow { width: 34px; height: 34px; font-size: 20px; }
+  .ride-panel { min-width: 250px; bottom: 26%; }
+}
+
+/* ---- KDA: kills / deaths / assists ------------------------------------ */
+.k, .kda-chip .k { color: var(--mint); }
+.d, .kda-chip .d { color: var(--candy); }
+.a, .kda-chip .a { color: var(--gold); }
+
+.war-stats .kda-chip b { font-weight: 700; }
+
+.result-stats .kda-main {
+  grid-column: 1 / -1;
+  padding: 10px 4px 11px;
+}
+.result-stats .kda-main b {
+  font-size: 30px;
+  letter-spacing: 0.02em;
+}

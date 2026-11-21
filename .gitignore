@@ -8,3 +8,6 @@ dist-ssr
 # Dev-only gun candidate shelf (4 MB of look-dev GLBs)
 public/assets/guns/candidates/
 PlanetClash.html
+
+# Local agent workspace memory
+.workbuddy/

@@ -271,7 +271,7 @@ export class Player {
       this.alt += this.velY * dt
       // Bonk: rising into the roof of a tunnel stops the jump instead of
       // poking through into the dirt.
-      if (this.velY > 0) {
+      if (this.velY > 0 && !this.planetOverride) {
         _head.copy(this.dir).multiplyScalar(surf + this.alt + PHYSICS.eyeHeight - this.duck)
         if (isDirt(_head)) {
           this.alt -= this.velY * dt
@@ -296,8 +296,14 @@ export class Player {
 
     this.coyote = this.grounded ? 0.12 : Math.max(0, this.coyote - dt)
     this.duck = Math.max(0, this.duck - dt * 1.5)
-    this.collide()
-    this.dirtPush(dt)
+    // A foreign world (the enemy planet) has no home-world dig field or
+    // props: running the candy planet's dirt/obstacle physics here shoves the
+    // player off the enemy heart and breaks capture. Its ground is the plain
+    // analytic surface from planetOverride instead.
+    if (!this.planetOverride) {
+      this.collide()
+      this.dirtPush(dt)
+    }
 
     this.landDip += (0 - this.landDip) * Math.min(1, dt * 11)
 

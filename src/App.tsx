@@ -59,8 +59,6 @@ export default function App() {
   const character = CHARACTERS.find((c) => c.id === characterId) ?? CHARACTERS[0]
   const weapon = WEAPONS[hud.weaponIndex] ?? WEAPONS[0]
   const isGun = weapon.kind === 'gun'
-  const kills = hud.enemiesTotal - hud.enemiesLeft
-  const progress = Math.min(1, kills / hud.enemiesTotal)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -69,7 +67,7 @@ export default function App() {
     let toastTimer = 0
 
     const pushFloaty = (floaty: Omit<Floaty, 'id' | 'rotate'>) => {
-      const id = ++idRef.current
+      const id = Date.now() * 100 + (++idRef.current % 100)
       const rotate = Math.round((Math.random() - 0.5) * 10)
       setFloaties((prev) => [...prev.slice(-13), { ...floaty, id, rotate }])
       const timer = window.setTimeout(() => {
@@ -80,7 +78,7 @@ export default function App() {
 
     const showToast = (text: string, tone: 'good' | 'bad' | 'gold') => {
       window.clearTimeout(toastTimer)
-      setToast({ id: ++idRef.current, text, tone })
+      setToast({ id: Date.now() * 100 + (++idRef.current % 100), text, tone })
       toastTimer = window.setTimeout(() => setToast(null), 2400)
     }
 
@@ -219,33 +217,40 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="objective">
-                <div className="objective-top">
-                  <span>击倒目标</span>
-                  <b>{kills}</b>
-                  <i>/ {hud.enemiesTotal}</i>
+              <div className="war-board">
+                <div className="war-title">
+                  <span>星球之心争夺战</span>
+                  <small>{hud.world === 'A' ? '你在糖果星球 · 防守' : '你在紫色星球 · 进攻'}</small>
                 </div>
-                <div className="objective-bar"><i style={{ width: `${progress * 100}%` }} /></div>
-                <div className="objective-sub">
-                  <span>据点 {hud.captured}/2</span>
-                  <span>剩余 {hud.enemiesLeft}</span>
+                <div className="heart-race">
+                  <div className="heart-side ours">
+                    <span className="heart-pip" />
+                    <div className="heart-track"><i style={{ width: `${hud.heartA * 100}%` }} /></div>
+                    <small>我方 {Math.round(hud.heartA * 100)}%</small>
+                  </div>
+                  <div className="heart-side theirs">
+                    <small>{Math.round(hud.heartB * 100)}% 敌方</small>
+                    <div className="heart-track"><i style={{ width: `${hud.heartB * 100}%` }} /></div>
+                    <span className="heart-pip" />
+                  </div>
                 </div>
-              </div>
-
-              <div className="pads">
-                {[0, 1].map((i) => {
-                  const value = hud.captureProgress[i] ?? 0
-                  const done = value >= 0.999
-                  return (
-                    <div key={i} className={`pad-chip${done ? ' done' : ''}`}>
-                      <span className="pad-dot" style={{ '--fill': `${value * 100}%` } as CSSProperties}><i>{i === 0 ? 'A' : 'B'}</i></span>
-                      <div>
-                        <small>据点 {i === 0 ? 'A' : 'B'}</small>
-                        <b>{done ? '已占领' : value > 0.02 ? `${Math.round(value * 100)}%` : '未占领'}</b>
-                      </div>
-                    </div>
-                  )
-                })}
+                <div className="war-stats">
+                  <span title="敌方剩余防御塔 大/中/小">塔 {hud.turrets.big}·{hud.turrets.mid}·{hud.turrets.small}</span>
+                  <span title="我方/敌方存活士兵">队友 {hud.allies.friendly} : {hud.allies.hostile}</span>
+                  <span title="正在往返途中的飞船数量">飞船在途 {hud.shipsInFlight}</span>
+                  <span className="kda-chip" title="击杀 / 死亡 / 助攻">
+                    KDA <b className="k">{hud.kda.kills}</b>/<b className="d">{hud.kda.deaths}</b>/<b className="a">{hud.kda.assists}</b>
+                  </span>
+                </div>
+                <div className="hero-row">
+                  <span className={`hero-tag ally ${hud.heroes.friendly ? 'alive' : 'down'}`}>
+                    我方英雄 {hud.heroes.friendly ? '存活' : '阵亡'}
+                  </span>
+                  <span className={`hero-tag enemy ${hud.heroes.hostile ? 'alive' : 'down'}`} title="紫色星球英雄血量">
+                    敌方英雄 {hud.heroes.hostile ? `${Math.round(hud.heroes.hostileHp * 100)}%` : '阵亡'}
+                    {hud.heroes.hostile && <i className="hero-hp"><b style={{ width: `${hud.heroes.hostileHp * 100}%` }} /></i>}
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -268,6 +273,75 @@ export default function App() {
               </div>
             )}
 
+            {hud.respawn >= 0 && (
+              <div className="respawn-banner">
+                <small>被击倒 · 即将在己方星球重生</small>
+                <b>{Math.ceil(hud.respawn)}s</b>
+              </div>
+            )}
+
+            {hud.supplyNearby && hud.ride.mode === 'foot' && hud.respawn < 0 && (
+              <div className="supply-prompt">
+                <b>弹药补给站已就绪</b>
+                <small>走近发光黄箱即可自动补满备弹</small>
+              </div>
+            )}
+
+            {/* The "I can't find the rocket" fix: a big guided prompt. */}
+            {hud.vehicleKind && hud.ride.mode === 'foot' && (
+              <div className="vehicle-prompt">
+                <span
+                  className="vehicle-arrow"
+                  style={{ transform: `rotate(${hud.vehicleBearing}rad)` }}
+                >➤</span>
+                <div className="vehicle-copy">
+                  <b>{hud.vehicleKind === 'ship' ? '飞船 shuttle' : '火箭 rocket'} 在 {Math.round(hud.vehicleDist)}m 外</b>
+                  <small>跟着箭头走 · 按 <kbd>F</kbd> 登上{hud.vehicleKind === 'ship' ? '飞船' : '火箭'}</small>
+                </div>
+              </div>
+            )}
+
+            {hud.shipEta > 0 && hud.ride.mode === 'foot' && !hud.vehicleKind && (
+              <div className="vehicle-prompt waiting">
+                <span className="vehicle-arrow">◷</span>
+                <div className="vehicle-copy">
+                  <b>下一班飞船 {Math.ceil(hud.shipEta)}s 后出发</b>
+                  <small>5 艘飞船循环往返 · 蓝色光柱停机坪按 <kbd>F</kbd> 登舰</small>
+                </div>
+              </div>
+            )}
+
+            {hud.ride.mode !== 'foot' && (
+              <div className={`ride-panel ${hud.ride.mode}`}>
+                <div className="ride-head">
+                  <b>{hud.ride.mode === 'ship' ? '飞船' : '火箭'}</b>
+                  {hud.ride.mode === 'ship' && (
+                    <span className={hud.ride.auto ? 'auto on' : 'auto'}>
+                      {hud.ride.auto ? '自动驾驶' : '手动接管'} · <kbd>E</kbd> 切换
+                    </span>
+                  )}
+                </div>
+                {hud.ride.mode === 'ship' && (
+                  <div className="ride-gauge"><label>船体</label><div className="bar"><i style={{ width: `${hud.ride.hp / hud.ride.maxHp * 100}%` }} /></div></div>
+                )}
+                {hud.ride.mode === 'ship' && !hud.ride.auto && (
+                  <div className="ride-gauge speed"><label>航速</label><div className="bar"><i style={{ width: `${Math.min(100, hud.ride.speed / 120 * 100)}%` }} /></div><b>{Math.round(hud.ride.speed)}</b></div>
+                )}
+                {hud.ride.mode === 'rocket' && (
+                  <div className="ride-gauge fuel"><label>燃料</label><div className="bar"><i style={{ width: `${hud.ride.fuel / hud.ride.maxFuel * 100}%` }} /></div><b>{Math.ceil(hud.ride.fuel)}</b></div>
+                )}
+                <div className="ride-hint">
+                  {hud.ride.mode === 'ship' ? (
+                    hud.ride.auto
+                      ? <>左键开炮 · <kbd>G</kbd> 弹射火箭 · <kbd>F</kbd> 离开</>
+                      : <><kbd>W</kbd>/<kbd>S</kbd> 前进后退 · 鼠标转向 · <kbd>A</kbd>/<kbd>D</kbd> 侧移 · 飞近星球低速降落 · <kbd>F</kbd> 离开</>
+                  ) : (
+                    <><kbd>W</kbd> 推进 · 鼠标转向 · 左键开炮 · <kbd>F</kbd> 离开</>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="hud-bottom">
               <div className="health-block">
                 <div className="health-sticker">
@@ -286,8 +360,8 @@ export default function App() {
 
               <div className="controls-hint" data-visible={showControls}>
                 <span><kbd>WASD</kbd> 移动</span>
+                <span><kbd>F</kbd> 登船/火箭</span>
                 <span><kbd>SPACE</kbd> 跳跃</span>
-                <span><kbd>SHIFT</kbd> 冲刺</span>
                 <span><kbd>R</kbd> 换弹</span>
                 <span><kbd>1-6</kbd> 换武器</span>
                 <span><kbd>右键</kbd> 瞄准</span>
@@ -355,13 +429,15 @@ export default function App() {
             <div className="logo-mark">✦</div>
             <h1>PLANET<span>CLASH</span></h1>
             <p className="tagline">
-              乘火箭进攻敌方星球，夺取星球之心。<br />
-              别让敌方工兵登船偷家！
+              两颗一模一样的星球，只差颜色。乘定时飞船或亲自驾驶火箭突袭敌方星球，
+              拆掉守护大塔，夺走星球之心。<br />
+              阵亡会在己方星球重生——战斗永不停歇。
             </p>
             <div className="feature-row">
-              <span>◉ 球形重力</span>
-              <span>✦ 双星战争</span>
-              <span>♛ 火箭通勤</span>
+              <span>◉ 双星攻城</span>
+              <span>✦ 飞船/火箭</span>
+              <span>♛ 夺心战</span>
+              <span>❀ 队友协同</span>
             </div>
 
             <div className="roster">
@@ -399,10 +475,10 @@ export default function App() {
             </div>
 
             <div className="keyline">
-              <span><kbd>WASD</kbd> 移动</span>
-              <span><kbd>鼠标</kbd> 瞄准</span>
-              <span><kbd>左键</kbd> 射击</span>
-              <span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> 换枪</span>
+              <span><kbd>F</kbd> 登载具</span>
+              <span><kbd>E</kbd> 自动驾驶</span>
+              <span><kbd>G</kbd> 弹射火箭</span>
+              <span><kbd>左键</kbd> 开火</span>
               <span><kbd>ESC</kbd> 暂停</span>
             </div>
             <small className="zero-resource">NO CDN · NO IMAGE · NO AUDIO FILE · WEBGL</small>
@@ -458,13 +534,18 @@ export default function App() {
           <div className={`result-card ${result.won ? 'win' : 'lose'}`}>
             <div className="result-stars">{result.won ? '✦ ✧ ✦ ✧ ✦' : '· · ·'}</div>
             <small>{result.won ? 'MISSION COMPLETE' : 'MISSION FAILED'}</small>
-            <h1>{result.won ? '星球清场！' : '被泡泡淹没了…'}</h1>
-            <p>{result.won ? '星球之心到手，敌方星球插上了糖果旗！' : '星球之心被夺走了…守住火箭坪，别特工兵站进环里！'}</p>
+            <h1>{result.won ? '星球之心到手！' : '星球之心失守…'}</h1>
+            <p>{result.won
+              ? '你拆掉了敌方守护大塔，夺走星球之心——敌方星球插上了糖果旗！'
+              : '敌方士兵攻破了我的大塔，偷走了星球之心。下次守住主塔！'}</p>
             <div className="result-stats">
-              <div><b>{result.kills}</b><small>击倒</small></div>
+              <div className="kda-main" title="击杀 / 死亡 / 助攻">
+                <b><span className="k">{result.kills}</span>/<span className="d">{result.deaths}</span>/<span className="a">{result.assists}</span></b>
+                <small>K / D / A</small>
+              </div>
+              <div><b>{result.turretsDown}</b><small>摧毁塔</small></div>
               <div><b>{Math.round(result.accuracy * 100)}%</b><small>命中率</small></div>
               <div><b>{formatTime(result.time)}</b><small>用时</small></div>
-              <div><b>{result.captured}/2</b><small>据点</small></div>
             </div>
             <div className="panel-actions">
               <button className="primary" onClick={restart}>再来一局 <b>↻</b></button>
